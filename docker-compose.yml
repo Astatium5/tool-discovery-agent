@@ -1,0 +1,54 @@
+# Tool Discovery Agent - Docker Compose
+# Development and deployment configuration
+
+version: "3.8"
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tool-discovery-agent
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount source code for development
+      - ./src:/home/agent/app/src:ro
+      - ./configs:/home/agent/app/configs:ro
+      # Persist output
+      - ./output:/home/agent/app/output
+      # X11 socket for GUI automation (optional)
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      # X11 display for GUI automation (optional)
+      - DISPLAY=${DISPLAY:-}
+      # IDE path (configure as needed)
+      - IDEA_PATH=/opt/idea
+    restart: unless-stopped
+    networks:
+      - agent-network
+    # For development with JetBrains Driver connecting to host IDE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional: Redis for caching discovered tools
+  redis:
+    image: redis:7-alpine
+    container_name: tool-discovery-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - agent-network
+    profiles:
+      - cache
+
+networks:
+  agent-network:
+    driver: bridge
+
+volumes:
+  redis-data:

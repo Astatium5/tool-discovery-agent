@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific
+configs/local.yaml
+output/
+logs/
+screenshots/
+*.json.bak
+
+# Kotlin
+.kotlin/
+
+# Gradle
+.gradle/
+**/build/
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ Platform
+.intellijPlatform/

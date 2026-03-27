@@ -143,6 +143,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+**/.env
+!.env.example
 
 # Spyder project settings
 .spyderproject
@@ -223,3 +225,4 @@ screenshots/
 
 # IntelliJ Platform
 .intellijPlatform/
+intellij-plugin/.idea/

@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.3.0"
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.3.0"
     id("org.jetbrains.intellij.platform") version "2.12.0"
     id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
 }
@@ -15,6 +16,7 @@ repositories {
     intellijPlatform {
         defaultRepositories()
     }
+    maven("https://packages.jetbrains.team/maven/p/ij/intellij-dependencies")
 }
 
 // Use Java 17 toolchain (required for IntelliJ Platform)
@@ -42,11 +44,28 @@ dependencies {
         pluginVerifier()
     }
 
+    // Remote Robot — for UI automation
+    implementation("com.intellij.remoterobot:remote-robot:0.11.23")
+    implementation("com.intellij.remoterobot:remote-fixtures:0.11.23")
+
     // WebSocket client
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // JSON serialization
+    // Jsoup — HTML parsing for UiTreeParser
+    implementation("org.jsoup:jsoup:1.17.2")
+
+    // Kotlinx Serialization — for JSON
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+
+    // JSON serialization (keep Gson for compatibility)
     implementation("com.google.code.gson:gson:2.10.1")
+
+    // Logging
+    implementation("org.slf4j:slf4j-simple:2.0.9")
+
+    // JUnit 5 for tests
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks {
@@ -75,5 +94,39 @@ tasks {
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
+    }
+}
+
+// Test configuration
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
+}
+
+// Remote Robot version for UI testing
+val remoteRobotVersion = "0.11.23"
+
+// runIdeForUiTests — starts IDE with robot server for UI testing
+intellijPlatformTesting {
+    runIde {
+        register("runIdeForUiTests") {
+            // Disable split mode — we want a single IDE process
+            splitMode.set(false)
+
+            task {
+                systemProperty("robot-server.port", "8082")
+                systemProperty("ide.show.tips.on.startup.default.value", "false")
+                systemProperty("idea.splash", "false")
+                systemProperty("ide.check.new.builds.on.startup", "false")
+            }
+
+            plugins {
+                // Robot server plugin for UI testing
+                robotServerPlugin(remoteRobotVersion)
+            }
+        }
     }
 }

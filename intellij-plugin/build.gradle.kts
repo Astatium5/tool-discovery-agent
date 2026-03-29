@@ -97,6 +97,16 @@ kotlin {
     }
 }
 
+// Agent Bridge Server — standalone HTTP server for Python agent integration
+tasks.register<JavaExec>("runBridgeServer") {
+    group = "application"
+    description = "Run the Agent Bridge Server (Python agent calls this to control IntelliJ)"
+    dependsOn(tasks.compileKotlin)
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("server.AgentBridgeServerKt")
+    // Override defaults via env: ROBOT_URL, BRIDGE_PORT
+}
+
 // Test configuration
 tasks.test {
     useJUnitPlatform()

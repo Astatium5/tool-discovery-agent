@@ -1,0 +1,18 @@
+# Copy to configs/local.yaml and fill in your values.
+# Most settings can also be overridden with environment variables.
+
+remote_robot:
+  # Tunnel URL exposing IntelliJ's Remote Robot plugin (port 8082 on MacBook)
+  url: "https://intellij.sudhanva.dev"
+  timeout_seconds: 30
+
+llm:
+  # OpenAI-compatible API (same as Raihan's setup)
+  base_url: "https://coding-intl.dashscope.aliyuncs.com/v1"
+  model: "MiniMax-M2.5"
+  # Set LLM_API_KEY environment variable — do not put key here
+
+evaluation:
+  n_runs: 3
+  graph_path: "data/knowledge_graph.json"
+  results_path: "data/eval_results.jsonl"

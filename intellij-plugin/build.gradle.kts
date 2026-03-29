@@ -57,6 +57,9 @@ dependencies {
     // Kotlinx Serialization — for JSON
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 
+    // Coroutines for async operations
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+
     // JSON serialization (keep Gson for compatibility)
     implementation("com.google.code.gson:gson:2.10.1")
 
@@ -110,12 +113,12 @@ tasks.register<JavaExec>("runBridgeServer") {
 // Graph-Enhanced UI Agent — direct Kotlin replacement for Python graph agent
 tasks.register<JavaExec>("runGraphAgent") {
     group = "application"
-    description = "Run the Graph-Enhanced UI Agent (Kotlin version of Python graph agent)"
+    description = "Run the Graph-Enhanced UI Agent"
     dependsOn(tasks.compileKotlin)
     classpath = sourceSets["main"].runtimeClasspath
-    mainClass.set("main.RunGraphAgentKt")
+    mainClass.set("main.MainKt")
     // Pass task as argument: ./gradlew runGraphAgent --args="your task here"
-    // Override defaults via env: REMOTE_ROBOT_URL, LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+    // Override defaults via env: ROBOT_URL, LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
 }
 
 // Test configuration

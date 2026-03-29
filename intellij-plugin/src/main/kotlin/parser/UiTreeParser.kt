@@ -1,5 +1,6 @@
 package parser
 
+import graph.PageState
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import profile.ApplicationProfile
@@ -226,4 +227,106 @@ object UiTreeParser {
 
     fun flatten(nodes: List<UiComponent>): List<UiComponent> =
         nodes.flatMap { listOf(it) + flatten(it.children) }
+
+    // ── Page State Inference ─────────────────────────────────────────────────────
+
+    /**
+     * Infer the current page state from a list of UI components.
+     *
+     * This analyzes the component tree to detect what kind of UI state we're in:
+     * - Dialog: DialogRootPane detected
+     * - Inline widget: HeavyWeightWindow with TextField
+     * - Refactor submenu: HeavyWeightWindow with multiple popup menus
+     * - Context menu: HeavyWeightWindow with single popup menu
+     * - Editor idle: default state (no popups/dialogs)
+     *
+     * @param components List of UI components from parse()
+     * @param rawHtml Original HTML for debugging
+     * @return PageState with inferred pageId, description, and interactive elements
+     */
+    fun inferPageState(components: List<UiComponent>, rawHtml: String = ""): PageState {
+        val allComponents = flatten(components)
+
+        // Check for DialogRootPane (dialogs like rename, find, etc.)
+        val dialogRootPane = allComponents.find {
+            it.cls.contains("DialogRootPane", ignoreCase = true)
+        }
+        if (dialogRootPane != null) {
+            val dialogName = dialogRootPane.accessibleName
+                .takeIf { it.isNotBlank() }
+                ?: dialogRootPane.text.takeIf { it.isNotBlank() }
+                ?: "unknown_dialog"
+
+            val interactiveElements = allComponents.filter { isDialogInteractive(it.cls) }
+            return PageState(
+                pageId = "dialog_${dialogName.lowercase().replace(" ", "_")}",
+                description = "Dialog window: $dialogName",
+                elements = interactiveElements,
+                rawHtml = rawHtml
+            )
+        }
+
+        // Check for HeavyWeightWindow (popups, context menus, refactor submenus)
+        val heavyWeightWindows = allComponents.filter {
+            it.cls.contains("HeavyWeightWindow", ignoreCase = true)
+        }
+
+        if (heavyWeightWindows.isNotEmpty()) {
+            // Check if any contain TextField (inline widget)
+            val hasTextField = heavyWeightWindows.any { window ->
+                flatten(listOf(window)).any {
+                    it.cls.contains("TextField", ignoreCase = true) ||
+                    it.cls.contains("ComboBox", ignoreCase = true)
+                }
+            }
+            if (hasTextField) {
+                val interactiveElements = allComponents.filter { isDialogInteractive(it.cls) }
+                return PageState(
+                    pageId = "inline_widget",
+                    description = "Inline widget with input field",
+                    elements = interactiveElements,
+                    rawHtml = rawHtml
+                )
+            }
+
+            // Count popup menus to distinguish context menu from refactor submenu
+            val popupCount = heavyWeightWindows.count { window ->
+                flatten(listOf(window)).any {
+                    it.cls.contains("ActionMenu", ignoreCase = true) ||
+                    it.cls.contains("ActionMenuItem", ignoreCase = true)
+                }
+            }
+
+            if (popupCount > 1) {
+                // Multiple popups = refactor submenu (Refactor This → Rename)
+                val interactiveElements = allComponents.filter { isDialogInteractive(it.cls) }
+                return PageState(
+                    pageId = "refactor_submenu",
+                    description = "Refactor submenu with multiple options",
+                    elements = interactiveElements,
+                    rawHtml = rawHtml
+                )
+            } else {
+                // Single popup = context menu
+                val interactiveElements = allComponents.filter { isDialogInteractive(it.cls) }
+                return PageState(
+                    pageId = "context_menu",
+                    description = "Context menu with actions",
+                    elements = interactiveElements,
+                    rawHtml = rawHtml
+                )
+            }
+        }
+
+        // Default: editor idle state
+        val interactiveElements = allComponents.filter {
+            isToolbarButton(it.cls) || isSidePanel(it.cls) || isEditorClass(it.cls)
+        }
+        return PageState(
+            pageId = "editor_idle",
+            description = "Editor in idle state - no active dialogs or menus",
+            elements = interactiveElements,
+            rawHtml = rawHtml
+        )
+    }
 }

@@ -116,7 +116,7 @@ class RemoteRobotClient:
     def is_alive(self) -> bool:
         """Return True if the Remote Robot server is reachable."""
         try:
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 resp = client.get(self.base_url)
                 return resp.status_code == 200
         except Exception:

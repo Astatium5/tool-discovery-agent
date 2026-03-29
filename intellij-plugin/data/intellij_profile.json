@@ -1,0 +1,13 @@
+{
+    "appName": "IntelliJ IDEA",
+    "profileVersion": "1.0",
+    "createdAt": 1774814007607,
+    "classRoles": {
+        "ActionButton": "BUTTON",
+        "ActionMenuItem": "MENU_ITEM",
+        "EditorComponentImpl": "EDITOR",
+        "JTextField": "TEXT_FIELD",
+        "HeavyWeightWindow": "POPUP_WINDOW",
+        "DialogRootPane": "DIALOG"
+    }
+}

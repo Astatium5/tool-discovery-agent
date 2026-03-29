@@ -107,6 +107,17 @@ tasks.register<JavaExec>("runBridgeServer") {
     // Override defaults via env: ROBOT_URL, BRIDGE_PORT
 }
 
+// Graph-Enhanced UI Agent — direct Kotlin replacement for Python graph agent
+tasks.register<JavaExec>("runGraphAgent") {
+    group = "application"
+    description = "Run the Graph-Enhanced UI Agent (Kotlin version of Python graph agent)"
+    dependsOn(tasks.compileKotlin)
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("main.RunGraphAgentKt")
+    // Pass task as argument: ./gradlew runGraphAgent --args="your task here"
+    // Override defaults via env: REMOTE_ROBOT_URL, LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+}
+
 // Test configuration
 tasks.test {
     useJUnitPlatform()

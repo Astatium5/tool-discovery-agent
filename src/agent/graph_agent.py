@@ -55,6 +55,7 @@ class AgentState(TypedDict):
     success: bool
     token_count: int
     doc_text_before: str  # snapshot of editor text before task starts
+    _decision: dict  # LLM decision passed from reason → act
 
 
 # ── Result ────────────────────────────────────────────────────────────────────
@@ -387,6 +388,7 @@ Return ONLY valid JSON (no markdown, no explanation):
             "success": False,
             "token_count": 0,
             "doc_text_before": doc_text_before,
+            "_decision": {},
         }
 
         final_state = self._workflow.invoke(initial_state)

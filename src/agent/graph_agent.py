@@ -125,8 +125,11 @@ class GraphAgent:
     # ── Nodes ──────────────────────────────────────────────────────────────────
 
     def _observe(self, state: AgentState) -> dict[str, Any]:
+        iteration = state["iteration"] + 1
+        print(f"\n[iter {iteration}] observe: fetching UI tree...", flush=True)
         html = self.client.get_tree()
         page = self.parser.parse(html)
+        print(f"[iter {iteration}] page: {page.page_id} — {len(page.elements)} elements", flush=True)
         return {"current_page": page}
 
     def _reason(self, state: AgentState) -> dict[str, Any]:
@@ -134,6 +137,7 @@ class GraphAgent:
         kg: KnowledgeGraph = state["knowledge_graph"]
         history = state["action_history"][-5:]  # last 5 actions
 
+        print(f"[iter {state['iteration'] + 1}] reason: calling LLM...", flush=True)
         prompt = self._build_prompt(state["task"], page, kg, history)
         response = self.llm.invoke(prompt)
 
@@ -151,6 +155,8 @@ class GraphAgent:
         params = decision.get("params", {})
         reasoning = decision.get("reasoning", "")
         page_before = state["current_page"].page_id if state["current_page"] else "unknown"
+
+        print(f"[iter {state['iteration'] + 1}] act: {action_type}({params}) — {reasoning[:80]}", flush=True)
 
         if action_type == "click":
             xpath = params.get("xpath", "")

@@ -16,6 +16,11 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load .env from the project root (two levels up from this file: src/main.py → project root)
+load_dotenv(Path(__file__).parent.parent / ".env")
+
 
 def _get_base_url() -> str:
     return os.environ.get("REMOTE_ROBOT_URL", "https://intellij.sudhanva.dev")

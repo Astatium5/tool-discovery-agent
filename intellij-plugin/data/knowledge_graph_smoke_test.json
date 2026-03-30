@@ -3,12 +3,7 @@
         {
             "id": "editor_idle",
             "description": "Editor in idle state",
-            "visitCount": 251
-        },
-        {
-            "id": "context_menu",
-            "description": "Context menu with actions",
-            "visitCount": 79
+            "visitCount": 11
         }
     ],
     "elements": [
@@ -149,11 +144,11 @@
             "role": "button"
         },
         {
-            "id": "editor_idle::EditorComponentImpl::Editor for CLAUDE_md",
+            "id": "editor_idle::EditorComponentImpl::Editor for Bootstrap_java",
             "pageId": "editor_idle",
             "cls": "EditorComponentImpl",
-            "label": "Editor for CLAUDE.md",
-            "xpath": "//div[@class='EditorComponentImpl' and @accessiblename='Editor for CLAUDE.md']",
+            "label": "Editor for Bootstrap.java",
+            "xpath": "//div[@class='EditorComponentImpl' and @accessiblename='Editor for Bootstrap.java']",
             "role": "unknown"
         },
         {
@@ -173,12 +168,20 @@
             "role": "button"
         },
         {
-            "id": "context_menu::EditorComponentImpl::Editor for CLAUDE_md",
-            "pageId": "context_menu",
-            "cls": "EditorComponentImpl",
-            "label": "Editor for CLAUDE.md",
-            "xpath": "//div[@class='EditorComponentImpl' and @accessiblename='Editor for CLAUDE.md']",
-            "role": "unknown"
+            "id": "editor_idle::ActionButton::Turn Off Or Change Behavior",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Turn Off Or Change Behavior",
+            "xpath": "//div[@class='ActionButton' and @tooltiptext='Turn Off Or Change Behavior']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Close_ Alt-click to close all notificati",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Close. Alt-click to close all notifications",
+            "xpath": "//div[@class='ActionButton' and @tooltiptext='Close. Alt-click to close all notifications']",
+            "role": "button"
         },
         {
             "id": "editor_idle::unknown::unknown",
@@ -187,133 +190,10 @@
             "label": "unknown",
             "xpath": "",
             "role": "unknown"
-        },
-        {
-            "id": "context_menu::unknown::unknown",
-            "pageId": "context_menu",
-            "cls": "unknown",
-            "label": "unknown",
-            "xpath": "",
-            "role": "unknown"
-        },
-        {
-            "id": "editor_idle::unknown::context_menu",
-            "pageId": "editor_idle",
-            "cls": "unknown",
-            "label": "context_menu",
-            "xpath": "",
-            "role": "unknown"
         }
     ],
     "transitions": [
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "observe",
-            "toPage": "context_menu"
-        },
-        {
-            "fromPage": "context_menu",
-            "elementId": "context_menu::unknown::unknown",
-            "action": "press_key",
-            "toPage": "editor_idle",
-            "params": {
-                "key": "escape"
-            }
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "press_shortcut",
-            "toPage": "context_menu",
-            "params": {
-                "keys": "meta shift n"
-            }
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::context_menu",
-            "action": "observe",
-            "toPage": "context_menu",
-            "params": {
-                "target": "context_menu"
-            }
-        },
-        {
-            "fromPage": "context_menu",
-            "elementId": "context_menu::unknown::unknown",
-            "action": "press_key",
-            "toPage": "editor_idle",
-            "params": {
-                "key": "escape"
-            }
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "observe",
-            "toPage": "context_menu"
-        },
-        {
-            "fromPage": "context_menu",
-            "elementId": "context_menu::unknown::unknown",
-            "action": "press_key",
-            "toPage": "editor_idle",
-            "params": {
-                "key": "escape"
-            }
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "press_shortcut",
-            "toPage": "context_menu",
-            "params": {
-                "keys": "meta shift n"
-            }
-        },
-        {
-            "fromPage": "context_menu",
-            "elementId": "context_menu::unknown::unknown",
-            "action": "press_key",
-            "toPage": "editor_idle",
-            "params": {
-                "key": "escape"
-            }
-        },
-        {
-            "fromPage": "context_menu",
-            "elementId": "context_menu::unknown::unknown",
-            "action": "press_shortcut",
-            "toPage": "editor_idle",
-            "params": {
-                "keys": "meta f"
-            }
-        }
     ],
     "shortcuts": [
-    ],
-    "failedTransitions": [
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "press_key",
-            "reason": "{\"reasoning\": \"I pressed Shift+F6 to initiate the rename refactoring. The action was successful. Now I need to observe the current state to see if the rename dialog has opened or if I need to take further action. Let me check what's currently visible on the screen.\", \"decision\": {\"action\": \"observe\", \"params\": {}}} }",
-            "timestamp": 1774860364401
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "press_key",
-            "reason": "{\"reasoning\":\"Looking at the history, I see that multiple attempts have been made with Shift+F6 to rename the method, but they haven't been successful. The issue is likely that the cursor wasn't positioned on the method name executeRecipe when the shortcut was pressed. I need to first observe the current state of the editor to see what's visible and locate the executeRecipe method in the code. Once I can see it, I'll need to position the cursor on the method name and then use Shift+F6 to open the rename dialog. Let me start by observing the current state of the editor.\",{\"decision\":{\"action\":\"observe\",\"params\":{}}}}",
-            "timestamp": 1774860696411
-        },
-        {
-            "fromPage": "editor_idle",
-            "elementId": "editor_idle::unknown::unknown",
-            "action": "press_key",
-            "reason": "{\"reasoning\":\"Looking at the history, I see that multiple attempts with Shift+F6 have been made but the rename dialog didn't appear. The issue is that the cursor wasn't positioned on the method name executeRecipe when the shortcut was pressed. The current state shows we're in editor_idle with Bootstrap.java open. I need to first locate the executeRecipe method in the code by searching for it, then use the rename shortcut. Let me use the find functionality (Ctrl+F or Cmd+F) to search for 'executeRecipe' and position the cursor on it, then use Shift+F6 to open the rename dialog.\", \"decision\": {\"action\": \"press_shortcut\", \"params\": {\"keys\": \"meta f\"}}}\"}}",
-            "timestamp": 1774860747203
-        }
     ]
 }

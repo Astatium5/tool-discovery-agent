@@ -8,6 +8,7 @@ import model.RecipeStep
 import parser.HtmlUiTreeProvider
 import parser.UiTreeProvider
 import parser.UiComponent
+import java.awt.Robot
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.time.Duration
@@ -21,7 +22,7 @@ class UiExecutor(
     private val treeProvider: UiTreeProvider = HtmlUiTreeProvider()
 ) {
     private val defaultTimeout = Duration.ofSeconds(10)
-    
+
     // Track the currently open file for context discovery
     var currentFilePath: String? = null
 
@@ -87,7 +88,7 @@ class UiExecutor(
         val editor = editors.firstOrNull { comp ->
             try { comp.callJs<Boolean>("component.hasFocus()") } catch (_: Exception) { false }
         } ?: editors.firstOrNull()
-            ?: throw IllegalStateException("No editor component found")
+        ?: throw IllegalStateException("No editor component found")
         editor.click()
         Thread.sleep(300)
     }
@@ -204,26 +205,114 @@ class UiExecutor(
         Thread.sleep(600)
     }
 
-    fun typeInDialog(value: String) {
+    fun typeInDialog(value: String, clearFirst: Boolean = true) {
         // Brief wait for popup/inline widget to render after a menu click
         Thread.sleep(500)
 
-        val (field, isInlineEditor) = findInputField()
-
-        if (!isInlineEditor) {
-            // For popup/dialog fields, click to focus and select all existing text
-            field.click()
-            Thread.sleep(100)
-            robot.keyboard {
-                pressing(KeyEvent.VK_META) { key(KeyEvent.VK_A) }
+        // IMPORTANT: Must use findAll and check each one, because find() returns the FIRST match,
+        // not the focused one. Dialogs can have multiple EditorComponentImpl fields.
+        val focusedField = try {
+            val allFields = robot.findAll<ComponentFixture>(
+                byXpath("//div[@class='EditorComponentImpl' or @class='JTextField' or @class='JBTextField']")
+            )
+            allFields.firstOrNull { field ->
+                try { field.callJs<Boolean>("component.hasFocus()") } catch (_: Exception) { false }
             }
-            Thread.sleep(200)
-        }
-        // For inline rename/extract templates the cursor is already inside the
-        // highlighted template field with the old name selected — just type.
+        } catch (_: Exception) { null }
 
-        robot.keyboard { enterText(value) }
+        if (focusedField != null) {
+            if (clearFirst) {
+                clearFieldWithJs(focusedField)
+                Thread.sleep(100)
+            }
+            robot.keyboard { enterText(value) }
+        } else {
+            val (field, isInlineEditor) = findInputField()
+
+            if (!isInlineEditor) {
+                field.click()
+                Thread.sleep(100)
+
+                if (clearFirst) {
+                    clearFieldWithJs(field)
+                    Thread.sleep(100)
+                }
+            }
+            // For inline rename/extract templates the cursor is already inside the
+            // highlighted template field with the old name selected — just type.
+
+            robot.keyboard { enterText(value) }
+        }
         Thread.sleep(300)
+        
+        // Dismiss any autocomplete/lookup popup that may have appeared after typing
+        dismissAutocompletePopup()
+    }
+    
+    /**
+     * Dismiss autocomplete/lookup popups that appear after typing in editor fields.
+     * These popups (LookupLayeredPane) can block subsequent UI interactions.
+     */
+    private fun dismissAutocompletePopup() {
+        try {
+            println("  Dismissing autocomplete popup (Escape)")
+            robot.keyboard { key(KeyEvent.VK_ESCAPE) }
+            Thread.sleep(200)
+        } catch (e: Exception) {
+            println("  Warning: Failed to dismiss autocomplete popup: ${e.message}")
+        }
+    }
+
+    /**
+     * Clear a text field using JavaScript.
+     *
+     * Threading context (confirmed by log):
+     *   callJs runs on RemoteRobot's eventLoopGroupProxy thread — NOT the EDT.
+     *
+     * Because we are off the EDT:
+     *   - invokeAndWait is safe to call (no deadlock risk).
+     *   - But bare model access (getSelectionModel, getTextLength, getText) still
+     *     throws "Access is allowed from EDT only" — so we must go through the
+     *     correct threading primitive for each operation.
+     *
+     * Strategy per component type:
+     *   - EditorComponentImpl / EditorTextField:
+     *       WriteCommandAction.runWriteCommandAction acquires the write-lock and
+     *       dispatches to the EDT internally. Safe to call from any thread.
+     *       Do NOT use selection + VK_DELETE: getSelectionModel() itself throws
+     *       before any selection happens, so VK_DELETE then deletes nothing and
+     *       enterText() appends to the stale text.
+     *   - JTextField / JBTextField:
+     *       invokeAndWait { setText('') } — EDT-safe, no deadlock from non-EDT thread.
+     *   - Fallback:
+     *       RemoteRobot keyboard select-all (Ctrl+A / Meta+A) + Delete.
+     */
+    private fun clearFieldWithJs(field: ComponentFixture) {
+        // Skip JavaScript entirely - it causes EDT threading issues and timeouts.
+        // RemoteRobot's keyboard injects directly into Swing EventQueue, which is reliable.
+        println("  clearFieldWithJs: using RemoteRobot keyboard (Ctrl+A + Delete)")
+        selectAllAndDelete()
+    }
+
+    /**
+     * Select-all + delete via RemoteRobot keyboard (Swing EventQueue injection).
+     * Tries Ctrl+A (Windows/Linux) then Meta+A (macOS).
+     */
+    private fun selectAllAndDelete() {
+//        robot.keyboard {
+//            pressing(KeyEvent.VK_CONTROL) { key(KeyEvent.VK_A) }
+//        }
+//        Thread.sleep(100)
+//        robot.keyboard { key(KeyEvent.VK_DELETE) }
+//        Thread.sleep(100)
+
+        // Meta+A — macOS (no-op if Ctrl+A already cleared the field)
+        robot.keyboard {
+            pressing(KeyEvent.VK_META) { key(KeyEvent.VK_A) }
+        }
+        Thread.sleep(100)
+        robot.keyboard { key(KeyEvent.VK_DELETE) }
+        Thread.sleep(100)
     }
 
     /**
@@ -256,8 +345,6 @@ class UiExecutor(
     }
 
     fun selectDropdown(value: String) {
-        // Find dropdown dynamically - look for combobox-like components
-        // Use contains() to match any class with "combo", "dropdown", or "select" in the name
         val dropdown = try {
             robot.find<ComponentFixture>(
                 byXpath("(//div[@class='HeavyWeightWindow' or @class='DialogRootPane'])[last()]//div[contains(@class, 'Combo') or contains(@class, 'combo') or contains(@class, 'Dropdown') or contains(@class, 'dropdown') or contains(@class, 'Select') or contains(@class, 'select')]"),
@@ -267,12 +354,10 @@ class UiExecutor(
             println("  No dropdown found, skipping selection")
             return
         }
-        
-        // Click to open dropdown
+
         dropdown.click()
         Thread.sleep(300)
-        
-        // Try to find and click the option with matching text
+
         try {
             val option = robot.find<ComponentFixture>(
                 byXpath("//div[@visible_text='$value' or @accessiblename='$value']"),
@@ -280,7 +365,6 @@ class UiExecutor(
             )
             option.click()
         } catch (_: Exception) {
-            // If exact match not found, try typing the value
             robot.keyboard { enterText(value) }
             Thread.sleep(200)
             robot.keyboard { key(KeyEvent.VK_ENTER) }
@@ -289,21 +373,58 @@ class UiExecutor(
     }
 
     fun clickDialogButton(label: String) {
+        println("  [clickDialogButton] Starting search for button '$label'...")
+        
+        // Strategy 1: Find by text attribute (most reliable, like clickMenuItem)
+        println("  [clickDialogButton] Strategy 1: Searching by @text attribute...")
         val button = try {
-            robot.find<ComponentFixture>(
-                byXpath("//div[@accessiblename='$label' and @class='JButton']"),
-                Duration.ofSeconds(5)
+            val found = robot.find<ComponentFixture>(
+                byXpath("//div[@class='JButton' and contains(@text, '$label')]"),
+                Duration.ofSeconds(3)
             )
-        } catch (_: Exception) {
-            robot.find<ComponentFixture>(
-                byXpath("//div[@accessiblename='$label' and @class!='ActionMenu' and @class!='ActionMenuItem']"),
-                Duration.ofSeconds(5)
-            )
+            println("  [clickDialogButton] Strategy 1 SUCCESS: Found button by @text")
+            found
+        } catch (e1: Exception) {
+            println("  [clickDialogButton] Strategy 1 FAILED: ${e1.message}")
+            
+            // Strategy 2: Find by accessible name
+            println("  [clickDialogButton] Strategy 2: Searching by @accessiblename attribute...")
+            try {
+                val found = robot.find<ComponentFixture>(
+                    byXpath("//div[@accessiblename='$label' and @class='JButton']"),
+                    Duration.ofSeconds(3)
+                )
+                println("  [clickDialogButton] Strategy 2 SUCCESS: Found button by @accessiblename")
+                found
+            } catch (e2: Exception) {
+                println("  [clickDialogButton] Strategy 2 FAILED: ${e2.message}")
+                
+                // Strategy 3: Find by visible_text
+                println("  [clickDialogButton] Strategy 3: Searching by @visible_text attribute...")
+                try {
+                    val found = robot.find<ComponentFixture>(
+                        byXpath("//div[@visible_text='$label' and @class='JButton']"),
+                        Duration.ofSeconds(3)
+                    )
+                    println("  [clickDialogButton] Strategy 3 SUCCESS: Found button by @visible_text")
+                    found
+                } catch (e3: Exception) {
+                    println("  [clickDialogButton] Strategy 3 FAILED: ${e3.message}")
+                    println("  [clickDialogButton] ALL STRATEGIES FAILED - throwing exception")
+                    throw e3
+                }
+            }
         }
 
+        println("  [clickDialogButton] Button found, getting screen coordinates...")
         val coords = getComponentScreenCenter(button)
+        println("  [clickDialogButton] Button center: (${coords.x}, ${coords.y})")
+        
+        println("  [clickDialogButton] Clicking at (${coords.x}, ${coords.y})...")
         clickAt(coords.x, coords.y)
+        println("  [clickDialogButton] Click completed, waiting 800ms...")
         Thread.sleep(800)
+        println("  [clickDialogButton] Done")
     }
 
     fun pressEscape() {
@@ -311,9 +432,6 @@ class UiExecutor(
         Thread.sleep(300)
     }
 
-    /**
-     * Presses a specific key by name. Supports: Enter, Escape, Tab, Backspace, Delete, etc.
-     */
     fun pressKey(keyName: String) {
         val keyCode = when (keyName.lowercase()) {
             "enter" -> KeyEvent.VK_ENTER
@@ -326,40 +444,49 @@ class UiExecutor(
             "down" -> KeyEvent.VK_DOWN
             "left" -> KeyEvent.VK_LEFT
             "right" -> KeyEvent.VK_RIGHT
-            else -> KeyEvent.VK_ENTER // Default to Enter
+            else -> KeyEvent.VK_ENTER
         }
         robot.keyboard { key(keyCode) }
         Thread.sleep(300)
     }
 
-    // ── Field Navigation steps (new in declarative model) ─────────────────────
+    // ── AWT Robot (bypasses RemoteRobot HTTP layer) ─────────────────────────────
 
     /**
-     * Focus a specific field in a dialog by its label.
-     * Uses multiple strategies to find and focus the field.
-     * 
-     * IMPORTANT: In IntelliJ, clicking on labels (static text) does NOT focus
-     * the associated field. We need to find and click the actual input component.
-     * 
-     * Supports:
-     * - Text fields (JTextField, JBTextField, EditorComponentImpl)
-     * - Dropdowns/ComboBoxes (JComboBox, ComboBox)
-     * - Checkboxes (JCheckBox)
-     *
-     * @param fieldLabel The label text of the field (e.g., "Name:", "Visibility:")
+     * AWT Robot for direct keyboard input that bypasses RemoteRobot's HTTP layer.
+     * Use this when RemoteRobot times out due to IDE being busy (e.g., signature preview computation).
      */
+    private val awtRobot: Robot by lazy {
+        Robot().apply { autoDelay = 50 }
+    }
+
+    /**
+     * Press a key directly using AWT Robot.
+     * This bypasses RemoteRobot's HTTP layer and works even when the IDE is busy.
+     */
+    fun pressKeyDirect(keyName: String) {
+        println("  pressKeyDirect: Pressing '$keyName' via AWT Robot")
+        val keyCodes = parseShortcutKeys(keyName)
+        for (keyCode in keyCodes) {
+            awtRobot.keyPress(keyCode)
+        }
+        // Release in reverse order
+        for (keyCode in keyCodes.reversed()) {
+            awtRobot.keyRelease(keyCode)
+        }
+        Thread.sleep(300)
+    }
+
+    // ── Field Navigation steps ────────────────────────────────────────────────
+
     fun focusField(fieldLabel: String) {
         val container = "(//div[@class='HeavyWeightWindow' or @class='DialogRootPane'])[last()]"
         val timeout = Duration.ofSeconds(3)
-        
-        // Normalize the field label (remove trailing colon for matching)
+
         val normalizedLabel = fieldLabel.trimEnd(':').trim()
-        
-        // Common input field classes (text fields, dropdowns, checkboxes)
         val inputFieldClasses = "@class='JTextField' or @class='JBTextField' or @class='EditorComponentImpl' or contains(@class, 'TextField') or @class='JComboBox' or contains(@class, 'ComboBox') or @class='JCheckBox'"
-        
-        // Strategy 1: Find input field by accessible name (most reliable for IntelliJ)
-        // IntelliJ sets the accessible name of input fields to include the field label
+
+        // Strategy 1: accessible name
         try {
             val field = robot.find<ComponentFixture>(
                 byXpath("$container//div[($inputFieldClasses) and (contains(@accessiblename, '$normalizedLabel') or contains(@accessiblename, '$fieldLabel'))]"),
@@ -370,39 +497,33 @@ class UiExecutor(
             println("  Found field by accessible name: $fieldLabel")
             return
         } catch (_: Exception) { }
-        
-        // Strategy 2: Find label, then find the input field that follows it
-        // In IntelliJ, labels and fields are siblings in the layout
+
+        // Strategy 2: find label, locate nearest input field
         try {
-            // Find the label first
             val label = robot.find<ComponentFixture>(
                 byXpath("$container//div[@visible_text='$fieldLabel' or contains(@text, '$fieldLabel') or @visible_text='$normalizedLabel' or contains(@text, '$normalizedLabel')]"),
                 timeout
             )
-            
-            // Get the label's bounds to find adjacent input field
+
             val labelBounds = getComponentBounds(label)
             val labelY = labelBounds.second
             val labelRight = labelBounds.first + labelBounds.third
-            
-            // Find all input fields in the container (text fields, dropdowns, checkboxes)
+
             val allFields = robot.findAll<ComponentFixture>(
                 byXpath("$container//div[$inputFieldClasses]")
             )
-            
-            // Find the input field that is closest to the label (same row or next row)
+
             val closestField = allFields.minByOrNull { field ->
                 val fieldBounds = getComponentBounds(field)
-                // Calculate distance: prefer fields on the same row, to the right of the label
                 val verticalDistance = kotlin.math.abs(fieldBounds.second - labelY)
                 val horizontalDistance = if (fieldBounds.first >= labelRight) {
-                    fieldBounds.first - labelRight  // Field is to the right
+                    fieldBounds.first - labelRight
                 } else {
-                    1000 + (labelRight - fieldBounds.first)  // Field is to the left (penalize)
+                    1000 + (labelRight - fieldBounds.first)
                 }
-                verticalDistance * 10 + horizontalDistance  // Weight vertical distance more
+                verticalDistance * 10 + horizontalDistance
             }
-            
+
             if (closestField != null) {
                 closestField.click()
                 Thread.sleep(200)
@@ -410,8 +531,8 @@ class UiExecutor(
                 return
             }
         } catch (_: Exception) { }
-        
-        // Strategy 3: Find any input field with the label text in its value or placeholder
+
+        // Strategy 3: placeholder / text content
         try {
             val field = robot.find<ComponentFixture>(
                 byXpath("$container//div[($inputFieldClasses) and (contains(@text, '$normalizedLabel') or contains(@placeholder, '$normalizedLabel'))]"),
@@ -422,45 +543,27 @@ class UiExecutor(
             println("  Found field by text content: $fieldLabel")
             return
         } catch (_: Exception) { }
-        
-        // Fallback: Use Tab navigation from current position
+
         println("  Could not find field '$fieldLabel', using Tab navigation")
         robot.keyboard { key(KeyEvent.VK_TAB) }
         Thread.sleep(200)
     }
 
-    /**
-     * Select a value from a specific dropdown field by its label.
-     *
-     * @param fieldLabel The label text of the dropdown field
-     * @param value The value to select
-     */
     fun selectDropdownField(fieldLabel: String, value: String) {
-        // First focus the field
         focusField(fieldLabel)
         Thread.sleep(100)
-        
-        // Then select the value using existing dropdown logic
         selectDropdown(value)
     }
 
-    /**
-     * Set a checkbox to a specific state.
-     *
-     * @param fieldLabel The label text of the checkbox
-     * @param checked Whether to check or uncheck the checkbox
-     */
     fun setCheckbox(fieldLabel: String, checked: Boolean) {
         val container = "(//div[@class='HeavyWeightWindow' or @class='DialogRootPane'])[last()]"
         val timeout = Duration.ofSeconds(3)
-        
-        // Strategy 1: Find checkbox by label
+
         try {
             val checkbox = robot.find<ComponentFixture>(
                 byXpath("$container//div[@class='JCheckBox' and (@visible_text='$fieldLabel' or contains(@text, '$fieldLabel') or contains(@accessiblename, '$fieldLabel'))]"),
                 timeout
             )
-            // Check current state and toggle if needed
             val currentState = checkbox.callJs<Boolean>("component.isSelected()")
             if (currentState != checked) {
                 checkbox.click()
@@ -468,8 +571,7 @@ class UiExecutor(
             }
             return
         } catch (_: Exception) { }
-        
-        // Strategy 2: Find by accessible name
+
         try {
             val checkbox = robot.find<ComponentFixture>(
                 byXpath("$container//div[@class='JCheckBox' and contains(@accessiblename, '$fieldLabel')]"),
@@ -482,36 +584,27 @@ class UiExecutor(
             }
             return
         } catch (_: Exception) { }
-        
+
         println("  Could not find checkbox '$fieldLabel'")
     }
 
-    /**
-     * Perform an action on a table editor (Add, Remove, Up, Down).
-     *
-     * @param action The action to perform (e.g., "Add", "Remove", "Up", "Down")
-     * @param rowIndex Optional row index for row-specific actions
-     */
     fun tableRowAction(action: String, rowIndex: Int?) {
         val container = "(//div[@class='HeavyWeightWindow' or @class='DialogRootPane'])[last()]"
         val timeout = Duration.ofSeconds(3)
-        
-        // If rowIndex is specified, first select the row
+
         if (rowIndex != null) {
             try {
                 val table = robot.find<ComponentFixture>(
                     byXpath("$container//div[@class='JBTable' or @class='JTable']"),
                     timeout
                 )
-                // Select the row
                 table.callJs<String>("component.setRowSelectionInterval($rowIndex, $rowIndex)")
                 Thread.sleep(200)
             } catch (_: Exception) {
                 println("  Could not find table to select row $rowIndex")
             }
         }
-        
-        // Find and click the action button
+
         try {
             val button = robot.find<ComponentFixture>(
                 byXpath("$container//div[@class='JButton' and (@visible_text='$action' or @accessiblename='$action')]"),
@@ -524,23 +617,14 @@ class UiExecutor(
         }
     }
 
-    /**
-     * Types text at the current cursor position.
-     */
     fun typeText(text: String) {
         robot.keyboard { enterText(text) }
         Thread.sleep(200)
     }
 
-    /**
-     * Opens a file in the IDE using Cmd+Shift+O.
-     * @param filePath The filename or path to open
-     */
     fun openFile(filePath: String) {
-        // Track the current file path for context discovery
         currentFilePath = filePath
-        
-        // Focus the IDE first
+
         val ideFrame = robot.find<ComponentFixture>(
             byXpath("//div[@class='IdeFrameImpl']"),
             Duration.ofSeconds(5)
@@ -548,7 +632,6 @@ class UiExecutor(
         ideFrame.click()
         Thread.sleep(200)
 
-        // Press Cmd+Shift+O to open file dialog
         robot.keyboard {
             pressing(KeyEvent.VK_META) {
                 pressing(KeyEvent.VK_SHIFT) {
@@ -558,28 +641,15 @@ class UiExecutor(
         }
         Thread.sleep(1000)
 
-        // Type the file path
         robot.keyboard { enterText(filePath) }
-        // Wait for results to appear
         Thread.sleep(1000)
 
-        // Press Enter to open
         robot.keyboard { key(KeyEvent.VK_ENTER) }
         Thread.sleep(1000)
     }
 
-    /**
-     * Represents a line of code with its line number.
-     */
     data class LineWithNumber(val lineNumber: Int, val content: String)
 
-    /**
-     * Reads file contents directly from disk with line numbers.
-     * This is a simpler alternative to using IDE's getDocument() API.
-     * 
-     * @param relativePath The path to the file relative to the project root
-     * @return List of LineWithNumber objects containing line number and content
-     */
     fun readFileWithLineNumbers(relativePath: String): List<LineWithNumber> {
         val projectPath = getProjectRoot()
         val resolved = projectPath.resolve(relativePath)
@@ -587,7 +657,6 @@ class UiExecutor(
         val file = if (resolved.toFile().exists()) {
             resolved.toFile()
         } else {
-            // Bare filename or partial path — walk the src tree to find it
             val srcRoot = projectPath.resolve("src").toFile()
             val searchRoot = if (srcRoot.isDirectory) srcRoot else projectPath.toFile()
             searchRoot.walk()
@@ -608,72 +677,42 @@ class UiExecutor(
         }
     }
 
-    /**
-     * Reads file contents with line numbers and filters to a specific line range.
-     * 
-     * @param relativePath The path to the file relative to the project root
-     * @param startLine Start line number (1-based, inclusive)
-     * @param endLine End line number (1-based, inclusive)
-     * @return List of LineWithNumber objects within the range
-     */
     fun readFileLines(relativePath: String, startLine: Int, endLine: Int): List<LineWithNumber> {
         return readFileWithLineNumbers(relativePath)
             .filter { it.lineNumber in startLine..endLine }
     }
 
-    /**
-     * Finds all occurrences of a symbol in the file and returns their line numbers.
-     * 
-     * @param relativePath The path to the file relative to the project root
-     * @param symbol The symbol to search for
-     * @return List of line numbers where the symbol appears
-     */
     fun findSymbolInFile(relativePath: String, symbol: String): List<Int> {
         return readFileWithLineNumbers(relativePath)
             .filter { it.content.contains(symbol) }
             .map { it.lineNumber }
     }
 
-    /**
-     * Gets the project root path.
-     */
     private fun getProjectRoot(): java.nio.file.Path {
-        // Get the working directory (project root)
         return java.nio.file.Paths.get("").toAbsolutePath()
     }
 
-    /**
-     * Provides simple file context by reading directly from disk.
-     * This is a simpler alternative to analyzeFileStructure() that doesn't require IDE.
-     * 
-     * @param relativePath The path to the file relative to the project root
-     * @return SimpleFileContext with methods, variables, and line count
-     */
     fun getSimpleFileContext(relativePath: String): SimpleFileContext {
         val lines = readFileWithLineNumbers(relativePath)
-        if (lines.isEmpty()) {
-            return SimpleFileContext(0, emptyList(), emptyList())
-        }
-        
+        if (lines.isEmpty()) return SimpleFileContext(0, emptyList(), emptyList())
+
         val methodNames = mutableListOf<String>()
         val variableNames = mutableListOf<String>()
-        
-        // Find method names using regex
+
         val methodRegex = Regex("""fun\s+(\w+)""")
         for (line in lines) {
             methodRegex.findAll(line.content).forEach { match ->
                 methodNames.add(match.groupValues[1])
             }
         }
-        
-        // Find variable names (val/var declarations)
+
         val varRegex = Regex("""(val|var)\s+(\w+)""")
         for (line in lines) {
             varRegex.findAll(line.content).forEach { match ->
                 variableNames.add(match.groupValues[2])
             }
         }
-        
+
         return SimpleFileContext(
             totalLines = lines.size,
             methodNames = methodNames,
@@ -681,9 +720,6 @@ class UiExecutor(
         )
     }
 
-    /**
-     * Simple file context data class for LLM prompts.
-     */
     data class SimpleFileContext(
         val totalLines: Int,
         val methodNames: List<String>,
@@ -698,10 +734,6 @@ class UiExecutor(
 
     // ── File structure analysis ─────────────────────────────────────────────
 
-    /**
-     * Analyzed structure of the currently open file.
-     * Used by the discovery agent to make informed caret/selection choices.
-     */
     data class FileStructure(
         val totalLines: Int,
         val methodNames: List<String>,
@@ -734,16 +766,10 @@ class UiExecutor(
         }
     }
 
-    /**
-     * Reads the focused editor's document and extracts file structure:
-     * methods, body ranges, class boundaries, literals, statements,
-     * variables, and expression targets.
-     */
     fun analyzeFileStructure(): FileStructure? {
         val editor = try { findFocusedEditor() } catch (_: Exception) { return null }
 
         val result = try {
-            // Wrap the entire JavaScript in a try-catch to provide better error messages
             editor.callJs<String>("""
                 try {
                     var doc = component.getDocument();
@@ -760,7 +786,6 @@ class UiExecutor(
                     var variableNames = [];
                     var expressionTargets = [];
 
-                    // Pass 1: find imports and class boundaries
                     var classDepth = 0;
                     var inClass = false;
                     for (var i = 0; i < lines.length; i++) {
@@ -769,7 +794,6 @@ class UiExecutor(
                             importEnd = i + 1;
                         }
                         if (!inClass) {
-                            // Simplified class detection regex - fix potential issues
                             if (trimmed.match(/^(class|object|abstract class|open class|data class)\s/)) {
                                 for (var ci = i; ci < lines.length; ci++) {
                                     if (lines[ci].indexOf('{') >= 0) {
@@ -794,22 +818,15 @@ class UiExecutor(
                     }
                     if (classBodyEnd == 0 && inClass) classBodyEnd = totalLines;
 
-                    // Pass 2: find methods with correct brace-counted body ranges
-                    // Simplified: find opening brace and closing brace
                     for (var i = 0; i < lines.length; i++) {
                         var trimmed = lines[i].trim();
-                        // Simple method detection - just find 'fun' keyword
                         if (trimmed.indexOf('fun') >= 0 && trimmed.indexOf('(') >= 0) {
-                            // Find method name
                             var funMatch = trimmed.match(/fun\s+(\w+)/);
                             if (funMatch) {
                                 methodNames.push(funMatch[1]);
-                                
-                                // Find the method body - look for { on this or subsequent lines
                                 var bodyStartLine = -1;
                                 var bodyEndLine = -1;
                                 var braceCount = 0;
-                                
                                 for (var j = i; j < lines.length && bodyEndLine < 0; j++) {
                                     var line = lines[j];
                                     for (var k = 0; k < line.length; k++) {
@@ -825,18 +842,15 @@ class UiExecutor(
                                         }
                                     }
                                 }
-                                
                                 if (bodyStartLine > 0 && bodyEndLine > 0) {
                                     methodBodies.push(bodyStartLine + ',' + bodyEndLine);
                                 } else if (bodyStartLine > 0) {
-                                    // No closing brace found, use a reasonable estimate
                                     methodBodies.push(bodyStartLine + ',' + (bodyStartLine + 5));
                                 }
                             }
                         }
                     }
 
-                    // Pass 3: find statements, literals, variables, expressions
                     for (var i = 0; i < lines.length; i++) {
                         var lineNum = i + 1;
                         var trimmed = lines[i].trim();
@@ -848,11 +862,9 @@ class UiExecutor(
                         var isAnnotation = trimmed.startsWith('@');
                         var isDecl = trimmed.match(/^(class|object|interface|fun|abstract|open|data)\s/);
 
-                        // Statements: val/var assignments, method calls, returns, etc.
                         if (!isComment && !isImport && !isStructural && !isAnnotation && !isDecl) {
                             statementLines.push(lineNum);
                         }
-                        // Also count val/var lines as statements
                         if (trimmed.match(/^(val|var)\s+\w+/)) {
                             if (statementLines.indexOf(lineNum) < 0) statementLines.push(lineNum);
                             var varMatch = trimmed.match(/^(val|var)\s+(\w+)/);
@@ -861,14 +873,11 @@ class UiExecutor(
 
                         if (isComment || isImport) continue;
 
-                        // Literals: strings and numbers inside code
                         var strLit = trimmed.match(/".[^"]*"/);
                         if (strLit) literalLines.push(lineNum);
-                        // Simplified number detection - avoid complex regex with parentheses
                         var numMatch = trimmed.match(/[\s=\(,]\s*(\d+)/);
                         if (numMatch && !trimmed.match(/^(fun |class )/)) literalLines.push(lineNum);
 
-                        // Expression targets: right-hand side of assignments
                         var assignMatch = trimmed.match(/(val|var)\s+\w+\s*=\s*(.+)/);
                         if (assignMatch) {
                             var rhs = assignMatch[2].trim();
@@ -876,7 +885,6 @@ class UiExecutor(
                         }
                     }
 
-                    // Deduplicate literal lines
                     var uniqueLiterals = [];
                     for (var li = 0; li < literalLines.length; li++) {
                         if (uniqueLiterals.indexOf(literalLines[li]) < 0) uniqueLiterals.push(literalLines[li]);
@@ -899,7 +907,6 @@ class UiExecutor(
         }
 
         val parts = result.split("|")
-        // Check if there was a JavaScript error
         if (parts.size == 1 && parts[0].startsWith("ERROR:")) {
             println("  File structure analysis failed: ${parts[0].substring(6)}")
             return null
@@ -945,12 +952,6 @@ class UiExecutor(
 
     fun fetchUiTree(): List<UiComponent> = treeProvider.fetchTree()
 
-    /**
-     * Get the current document text from the focused editor.
-     * Used for detecting source code changes as a completion signal.
-     *
-     * @return The current document text, or null if no editor is focused
-     */
     fun getDocumentText(): String? {
         return try {
             val editor = findFocusedEditor()
@@ -979,7 +980,7 @@ class UiExecutor(
         return editors.firstOrNull { comp ->
             try { comp.callJs<Boolean>("component.hasFocus()") } catch (_: Exception) { false }
         } ?: editors.firstOrNull()
-            ?: throw IllegalStateException("No editor component found")
+        ?: throw IllegalStateException("No editor component found")
     }
 
     private fun getCaretScreenCoords(editor: ComponentFixture): ScreenCoords {
@@ -1030,11 +1031,7 @@ class UiExecutor(
         val parts = result.split(",")
         return ScreenCoords(parts[0].trim().toDouble().toInt(), parts[1].trim().toDouble().toInt())
     }
-    
-    /**
-     * Get the bounds (x, y, width, height) of a component.
-     * Returns a Triple of (x, y, width) - height can be added if needed.
-     */
+
     private fun getComponentBounds(component: ComponentFixture): Triple<Int, Int, Int> {
         val result = component.callJs<String>("""
             var x = 0;
@@ -1051,7 +1048,7 @@ class UiExecutor(
                 });
             x + ',' + y + ',' + w;
         """.trimIndent())
-        
+
         val parts = result.split(",")
         return Triple(
             parts[0].trim().toDouble().toInt(),
@@ -1131,5 +1128,4 @@ class UiExecutor(
             }
         }
     }
-
 }

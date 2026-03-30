@@ -1,6 +1,7 @@
 package profile
 
 import llm.LlmClient
+import llm.PromptLogger
 import executor.UiExecutor
 import parser.UiTreeProvider
 
@@ -310,7 +311,15 @@ Return JSON array only, no markdown fences:
             .replace("{{MISSING_ROLES}}", rolesDescription)
 
         return try {
-            val response = llm.chatStructured(SYSTEM_PROMPT, prompt)
+            // Create log context for gap inference
+            val logContext = PromptLogger.LogContext(
+                caller = "UIProfiler.inferMissingClasses",
+                intent = "Infer missing UI component classes",
+                iteration = null,
+                actionHistorySummary = "Missing roles: ${missingRoles.joinToString(", ") { it.name }}"
+            )
+
+            val response = llm.chatStructured(SYSTEM_PROMPT, prompt, logContext)
             val parsed = parseClassifications(response)
             println("      Inferred: ${parsed.entries.joinToString(", ") { "${it.key} -> ${it.value}" }}")
             parsed
@@ -361,7 +370,15 @@ Return JSON array only, no markdown fences:
         val prompt = CLASSIFICATION_PROMPT_TEMPLATE.replace("{{CLASSES}}", classesBlock)
 
         return try {
-            val response = llm.chatStructured(SYSTEM_PROMPT, prompt)
+            // Create log context for batch classification
+            val logContext = PromptLogger.LogContext(
+                caller = "UIProfiler.classifyBatch",
+                intent = "Classify UI component classes",
+                iteration = null,
+                actionHistorySummary = "Batch size: ${batch.size} classes"
+            )
+
+            val response = llm.chatStructured(SYSTEM_PROMPT, prompt, logContext)
             parseClassifications(response)
         } catch (e: Exception) {
             println("  UIProfiler: LLM classification failed: ${e.message}")

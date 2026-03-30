@@ -103,7 +103,22 @@ class UiAgentTest : BaseTest() {
         println("\n  Result: ${result.message}")
         println("  Success: ${result.success}")
         println("  Actions taken: ${result.actionsTaken}")
+        // The brain agent should observe the dialog and interact with it
+    }
 
+    @Test
+    @DisplayName("Execute change visibility using UI Agent")
+    fun testMethodVisibilityWithUiAgent() {
+        println("\n=== TEST: UI Agent Change Signature ===\n")
+
+        // Execute with the UI agent
+        val result = uiAgent.execute(
+            "in file UiExecutor.kt, change visibility of method executeRecipe: Private"
+        )
+
+        println("\n  Result: ${result.message}")
+        println("  Success: ${result.success}")
+        println("  Actions taken: ${result.actionsTaken}")
         // The brain agent should observe the dialog and interact with it
     }
 

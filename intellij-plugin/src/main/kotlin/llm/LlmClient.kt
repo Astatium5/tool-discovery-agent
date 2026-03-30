@@ -43,7 +43,8 @@ import java.io.File
 class LlmClient(
     private val baseUrl: String = loadEnvVar("LLM_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/v1"),
     private val model: String = loadEnvVar("LLM_MODEL", "MiniMax-M2.5"),
-    private val apiKey: String = loadEnvVar("LLM_API_KEY", "")
+    private val apiKey: String = loadEnvVar("LLM_API_KEY", ""),
+    private val logger: PromptLogger? = PromptLogger()
 ) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -58,7 +59,8 @@ class LlmClient(
      * Send a list of messages and get the assistant's reply.
      * Each message is a map with "role" and "content" keys.
      */
-    fun chat(messages: List<Map<String, String>>): String {
+    fun chat(messages: List<Map<String, String>>, context: PromptLogger.LogContext? = null): String {
+        val startTime = System.currentTimeMillis()
         val messagesJson = messages.joinToString(",\n    ") { msg ->
             """{"role": "${msg["role"]}", "content": ${msg["content"]?.jsonEscape() ?: "\"\"" }}"""
         }
@@ -87,17 +89,33 @@ class LlmClient(
             throw RuntimeException("LLM server returned ${response.code}: $responseBody")
         }
 
-        return extractContent(responseBody)
+        val content = extractContent(responseBody)
+        val durationMs = System.currentTimeMillis() - startTime
+
+        // Log the interaction
+        logger?.log(
+            model = model,
+            messages = messages,
+            rawResponse = responseBody,
+            parsedResponse = content,
+            context = context,
+            durationMs = durationMs
+        )
+
+        return content
     }
 
     /**
      * Convenience: send a system prompt + user prompt, get the reply.
      */
-    fun chatStructured(systemPrompt: String, userPrompt: String): String {
-        return chat(listOf(
-            mapOf("role" to "system", "content" to systemPrompt),
-            mapOf("role" to "user", "content" to userPrompt)
-        ))
+    fun chatStructured(systemPrompt: String, userPrompt: String, context: PromptLogger.LogContext? = null): String {
+        return chat(
+            listOf(
+                mapOf("role" to "system", "content" to systemPrompt),
+                mapOf("role" to "user", "content" to userPrompt)
+            ),
+            context
+        )
     }
 
     /**

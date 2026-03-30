@@ -133,6 +133,11 @@ object UiTreeParser {
         val tooltip        = el.attr("tooltiptext").trim().take(80)
         val enabled        = el.attr("enabled") != "false"
         val visible        = el.attr("visible") != "false"
+        
+        // NEW: Extract value and state attributes
+        val value = el.attr("value").trim().take(200).ifBlank { null }
+        val selected = el.attr("selected") == "true"
+        val focused = el.attr("focused") == "true"
 
         if (!visible) return null
 
@@ -144,7 +149,10 @@ object UiTreeParser {
                 children.size >  1 -> UiComponent(
                     cls = cls, text = "", accessibleName = accessibleName,
                     tooltip = "", enabled = enabled, hasSubmenu = false,
-                    children = children
+                    children = children,
+                    value = value,
+                    selected = selected,
+                    focused = focused
                 )
                 else -> null
             }
@@ -164,7 +172,10 @@ object UiTreeParser {
             cls = cls, text = displayText,
             accessibleName = accessibleName, tooltip = tooltip,
             enabled = enabled, hasSubmenu = isSubmenuClass(cls),
-            children = children
+            children = children,
+            value = value,
+            selected = selected,
+            focused = focused
         )
     }
 

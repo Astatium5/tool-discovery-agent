@@ -36,6 +36,7 @@ class UiAgent(
     private val reasoner = LLMReasoner(llm)
     private val actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm)
     private val recipeRegistry = RecipeRegistry()
+    private val stateRegistry = SuccessfulStateRegistry()  // Track achieved states
 
     /**
      * Result of executing an intent.
@@ -82,6 +83,9 @@ class UiAgent(
         println("\n=== BRAIN AGENT ===")
         println("Intent: $intent")
 
+        // Clear state registry for new task
+        stateRegistry.clear()
+
         // Try to find a matching recipe
         val matchedRecipe = findMatchingRecipe(intent)
         if (matchedRecipe != null) {
@@ -126,7 +130,8 @@ class UiAgent(
                 uiTree = uiTree,
                 profile = profile,
                 actionHistory = state.actionHistory.toList(),
-                matchedRecipe = state.matchedRecipe
+                matchedRecipe = state.matchedRecipe,
+                stateRegistry = stateRegistry  // Pass achieved states to reasoner
             )
 
             val decision = reasoner.decide(context)
@@ -156,6 +161,11 @@ class UiAgent(
                 result = actionResult.message,
                 success = actionResult.success
             ))
+
+            // Detect and record successful states
+            if (actionResult.success) {
+                detectSuccessfulState(decision.action, actionResult, uiTree, state.iteration)
+            }
 
             // Advance recipe step if action was successful and we have a matched recipe
             if (actionResult.success && state.matchedRecipe != null) {
@@ -227,6 +237,104 @@ class UiAgent(
         
         // Complete if document changed and no popups/dialogs
         return !hasPopup && !hasDialog
+    }
+
+    /**
+     * Detect and record successful states based on action results.
+     * This helps prevent the LLM from repeating already-completed steps.
+     */
+    private fun detectSuccessfulState(
+        action: Action,
+        result: ActionGenerator.ActionResult,
+        uiTree: List<UiComponent>,
+        iteration: Int
+    ) {
+        when (action) {
+            is Action.OpenFile -> {
+                stateRegistry.achieve(
+                    SuccessfulStateRegistry.StateType.FILE_OPENED,
+                    mapOf("path" to action.path),
+                    iteration
+                )
+            }
+            
+            is Action.MoveCaret -> {
+                // Verify symbol is in navbar (cursor is on the symbol)
+                val navBarItems = findNavBarItems(uiTree)
+                if (navBarItems.any { it.text.contains(action.symbol) }) {
+                    stateRegistry.achieve(
+                        SuccessfulStateRegistry.StateType.SYMBOL_TARGETED,
+                        mapOf("symbol" to action.symbol),
+                        iteration
+                    )
+                }
+            }
+            
+            is Action.PressKey -> {
+                if (action.key == "context_menu") {
+                    // Check if menu is visible
+                    if (hasContextMenuOpen(uiTree)) {
+                        stateRegistry.achieve(
+                            SuccessfulStateRegistry.StateType.CONTEXT_MENU_OPENED,
+                            emptyMap(),
+                            iteration
+                        )
+                    }
+                }
+            }
+            
+            is Action.Click -> {
+                when {
+                    action.target == "Refactor" -> {
+                        stateRegistry.achieve(
+                            SuccessfulStateRegistry.StateType.REFACTOR_MENU_OPENED,
+                            emptyMap(),
+                            iteration
+                        )
+                    }
+                    action.target.contains("Change Signature") -> {
+                        stateRegistry.achieve(
+                            SuccessfulStateRegistry.StateType.DIALOG_OPENED,
+                            mapOf("dialog" to "Change Signature"),
+                            iteration
+                        )
+                    }
+                    listOf("Refactor", "OK", "Apply", "Done", "Confirm").any { action.target.contains(it) } -> {
+                        stateRegistry.achieve(
+                            SuccessfulStateRegistry.StateType.DIALOG_CONFIRMED,
+                            mapOf("button" to action.target),
+                            iteration
+                        )
+                    }
+                }
+            }
+            
+            is Action.SelectDropdown -> {
+                stateRegistry.achieve(
+                    SuccessfulStateRegistry.StateType.VALUE_SELECTED,
+                    mapOf("field" to action.target, "value" to action.value),
+                    iteration
+                )
+            }
+            
+            else -> { /* No state tracking for other actions */ }
+        }
+    }
+
+    /**
+     * Find NavBar items in the UI tree.
+     */
+    private fun findNavBarItems(uiTree: List<UiComponent>): List<UiComponent> {
+        return UiTreeParser.flatten(uiTree)
+            .filter { it.cls.contains("NavBarItemComponent") }
+    }
+
+    /**
+     * Check if a context menu is currently open.
+     */
+    private fun hasContextMenuOpen(uiTree: List<UiComponent>): Boolean {
+        return UiTreeParser.flatten(uiTree)
+            .any { it.cls.contains("HeavyWeightWindow") || it.cls.contains("MyMenu") }
     }
 
     /**

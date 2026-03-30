@@ -7,13 +7,23 @@ data class UiComponent(
     val tooltip:       String,
     val enabled:       Boolean,
     val hasSubmenu:    Boolean,
-    val children:      List<UiComponent>
+    val children:      List<UiComponent>,
+    val value:         String? = null,      // Current value for text fields, dropdowns, etc.
+    val selected:      Boolean = false,     // For checkboxes, radio buttons
+    val focused:       Boolean = false      // Whether this component has focus
 ) {
     val label get() = when {
         accessibleName.isNotBlank() -> accessibleName
         text.isNotBlank()           -> text
         tooltip.isNotBlank()        -> tooltip
         else                        -> cls
+    }
+    
+    // New helper for display
+    val displayValue: String? get() = when {
+        value != null && value.isNotBlank() -> value
+        selected -> "✓"
+        else -> null
     }
 
     val xpath get() = when {

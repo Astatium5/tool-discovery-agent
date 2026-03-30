@@ -1,6 +1,7 @@
 package reasoner
 
 import llm.LlmClient
+import llm.PromptLogger
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -8,6 +9,7 @@ import parser.UiComponent
 import profile.ApplicationProfile
 import formatter.UiTreeFormatter
 import recipe.VerifiedRecipe
+import agent.SuccessfulStateRegistry
 
 /**
  * LLM Reasoner - Makes decisions based on intent and observed UI state.
@@ -68,7 +70,8 @@ class LLMReasoner(private val llm: LlmClient) {
         val profile: ApplicationProfile,  // Profile for role detection
         val actionHistory: List<HistoryEntry>,
         val matchedRecipe: MatchedRecipe? = null,  // Full recipe with step tracking
-        val parsedIntent: ParsedIntent? = null  // Extracted parameters from intent
+        val parsedIntent: ParsedIntent? = null,  // Extracted parameters from intent
+        val stateRegistry: SuccessfulStateRegistry? = null  // Track achieved states to prevent repetition
     )
 
     /**
@@ -160,6 +163,8 @@ class LLMReasoner(private val llm: LlmClient) {
 {{INTENT}}
 
 {{PARSED_PARAMS}}
+
+{{ACHIEVED_STATES}}
 
 ## Current UI State
 {{UI_STATE}}
@@ -254,8 +259,22 @@ Return JSON (only JSON, no other text):
     fun decide(context: DecisionContext): Decision {
         val prompt = buildPrompt(context)
 
+        // Create log context with intent and iteration info
+        val logContext = PromptLogger.LogContext(
+            caller = "LLMReasoner.decide",
+            intent = context.intent,
+            iteration = context.actionHistory.size + 1,
+            actionHistorySummary = context.actionHistory.takeLast(3).joinToString("; ") {
+                "${it.action::class.simpleName}: ${it.result.take(50)}"
+            }
+        )
+
         return try {
-            val response = llm.chatStructured("You are an expert developer using IntelliJ IDEA.", prompt)
+            val response = llm.chatStructured(
+                "You are an expert developer using IntelliJ IDEA.",
+                prompt,
+                logContext
+            )
             parseDecision(response)
         } catch (e: Exception) {
             println("  LLMReasoner: LLM call failed, returning Observe action: ${e.message}")
@@ -280,9 +299,12 @@ Return JSON (only JSON, no other text):
             } else ""
         } ?: ""
 
+        val achievedStatesSection = context.stateRegistry?.formatForPrompt() ?: "No states achieved yet."
+
         return DECISION_PROMPT
             .replace("{{INTENT}}", context.intent)
             .replace("{{PARSED_PARAMS}}", paramsSection)
+            .replace("{{ACHIEVED_STATES}}", achievedStatesSection)
             .replace("{{UI_STATE}}", formatUIState(context.uiTree, context.profile))
             .replace("{{ACTION_HISTORY}}", formatActionHistory(context.actionHistory))
             .replace("{{RECIPE_SECTION}}", formatRecipeSection(context.matchedRecipe))
@@ -351,9 +373,10 @@ Use the available primitive actions and observe the UI after each action."""
     /**
      * Format the UI state for the prompt using direct tree formatting.
      * No intermediate UIObservation - format UiComponent tree directly.
+     * Uses focused formatting to only show dialog/popup when present.
      */
     private fun formatUIState(uiTree: List<UiComponent>, profile: ApplicationProfile): String {
-        return UiTreeFormatter.format(uiTree, profile)
+        return UiTreeFormatter.formatFocused(uiTree, profile)
     }
 
     /**

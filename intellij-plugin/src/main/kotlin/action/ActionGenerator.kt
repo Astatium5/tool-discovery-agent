@@ -1,6 +1,7 @@
 package action
 
 import llm.LlmClient
+import llm.PromptLogger
 import reasoner.LLMReasoner.Action
 import executor.UiExecutor
 import parser.ScopedSnapshotBuilder
@@ -183,7 +184,11 @@ Return JSON:
     /**
      * Execute a click action.
      *
-     * IMPORTANT: After EVERY menu item click, we observe the UI state and use LLM
+     * IMPORTANT: We detect the context FIRST to avoid wasted timeout searches.
+     * - If we're in a dialog with a matching JButton, click it directly.
+     * - If we're in a menu context (HeavyWeightWindow with ActionMenuItem), try menu item.
+     *
+     * After EVERY menu item click, we observe the UI state and use LLM
      * to classify what happened. We do NOT use keyword-based detection - every click
      * gets the same treatment: observe → classify → return analysis.
      *
@@ -192,60 +197,142 @@ Return JSON:
     private fun executeClick(action: Action.Click, uiTree: List<UiComponent>): ActionResult {
         val target = action.target
 
+        // IMPORTANT: Flatten the tree to search ALL components, not just root level.
+        // DialogRootPane, MyDialog, and JButton are often nested children inside HeavyWeightWindow.
+        val allComponents = UiTreeParser.flatten(uiTree)
+
+        // Detect context: are we in a dialog with a JButton, or a menu popup?
+        val isInDialog = allComponents.any { it.cls == "DialogRootPane" || it.cls == "MyDialog" }
+        val hasMatchingJButton = allComponents.any { comp ->
+            comp.cls == "JButton" && (
+                comp.text?.contains(target, ignoreCase = true) == true ||
+                comp.accessibleName?.contains(target, ignoreCase = true) == true
+            )
+        }
+        val isInMenuPopup = allComponents.any { it.cls == "HeavyWeightWindow" }
+        val hasMatchingMenuItem = allComponents.any { comp ->
+            (comp.cls == "ActionMenuItem" || comp.cls == "ActionMenu") &&
+            comp.text?.contains(target, ignoreCase = true) == true
+        }
+
+        println("    Click context: isInDialog=$isInDialog, hasMatchingJButton=$hasMatchingJButton, isInMenuPopup=$isInMenuPopup, hasMatchingMenuItem=$hasMatchingMenuItem")
+
         return try {
-            // Try to click as a menu item first, then as a dialog button
-            try {
-                // Get pre-click popup count for comparison
-                val preClickUiTree = uiTreeProvider()
-                val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
-                
-                executor.clickMenuItem(target)
-                // Wait for menu action to take effect
-                Thread.sleep(800)
-                
-                // ALWAYS wait for UI changes and classify - no keyword-based shortcuts
-                val waitResult = waitForUIElement(timeoutMs = 2000)
-                
-                // Get fresh UI tree for LLM analysis
-                val postClickUiTree = uiTreeProvider()
-                
-                // ALWAYS use LLM-based state analysis to classify what happened
-                val analysis = analyzeToolResponse(
-                    toolName = target,
-                    uiTree = postClickUiTree,
-                    goal = "",  // Goal would be passed from context
-                    preClickPopupCount = preClickPopupCount
-                )
-                
-                println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
-                
-                // Return result with analysis data
-                ActionResult(
-                    success = true,
-                    message = "Clicked menu item '$target' - ${analysis.description}",
-                    data = mapOf(
-                        "analysis" to analysis,
-                        "stateType" to analysis.stateType.name,
-                        "isSubmenu" to analysis.isSubmenu,
-                        "isToolTriggered" to analysis.isToolTriggered,
-                        "availableItems" to analysis.availableItems,
-                        "confirmAction" to analysis.confirmAction,
-                        "dialogFields" to analysis.dialogFields
-                    )
-                )
-            } catch (e: Exception) {
-                // Try as dialog button
+            // Priority 1: If in dialog with matching JButton, click it directly (skip menu searches)
+            if (isInDialog && hasMatchingJButton) {
+                println("    Detected dialog context with JButton '$target' - clicking directly")
                 try {
                     executor.clickDialogButton(target)
                     Thread.sleep(500)
-                    ActionResult(true, "Clicked button '$target'")
-                } catch (e2: Exception) {
-                    ActionResult(false, "Could not click '$target': ${e2.message}")
+                    ActionResult(true, "Clicked dialog button '$target'")
+                } catch (e: Exception) {
+                    // Fallback 1: Press Enter via RemoteRobot
+                    println("    Button click failed, trying Enter key fallback: ${e.message}")
+                    try {
+                        executor.pressKey("enter")
+                        // Longer wait (1000ms) for dialog to close after Enter
+                        Thread.sleep(1000)
+                        ActionResult(true, "Pressed Enter as fallback for '$target'")
+                    } catch (e2: Exception) {
+                        // Fallback 2: Press Enter via AWT Robot (bypasses HTTP layer)
+                        println("    RemoteRobot Enter failed, trying AWT Robot direct: ${e2.message}")
+                        try {
+                            executor.pressKeyDirect("enter")
+                            // Longer wait (1000ms) for dialog to close after Enter
+                            Thread.sleep(1000)
+                            ActionResult(true, "Pressed Enter (AWT Robot) as fallback for '$target'")
+                        } catch (e3: Exception) {
+                            ActionResult(false, "Could not click '$target' (button: ${e.message}, enter: ${e2.message}, awt: ${e3.message})")
+                        }
+                    }
+                }
+            }
+            // Priority 2: If in menu popup with matching menu item, click it
+            else if (isInMenuPopup && hasMatchingMenuItem) {
+                println("    Detected menu context with ActionMenuItem '$target' - clicking directly")
+                executeMenuClick(target)
+            }
+            // Priority 3: Unknown context - try menu first (legacy behavior), then dialog, then Enter
+            else {
+                println("    Unknown context - trying menu item first, then dialog button, then Enter")
+                try {
+                    executeMenuClick(target)
+                } catch (e: Exception) {
+                    // Try as dialog button
+                    try {
+                        executor.clickDialogButton(target)
+                        Thread.sleep(500)
+                        ActionResult(true, "Clicked button '$target'")
+                    } catch (e2: Exception) {
+                        // Fallback 1: Press Enter via RemoteRobot
+                        println("    Both menu and button failed, trying Enter key fallback")
+                        try {
+                            executor.pressKey("enter")
+                            // Longer wait (1000ms) for dialog to close after Enter
+                            Thread.sleep(1000)
+                            ActionResult(true, "Pressed Enter as fallback for '$target'")
+                        } catch (e3: Exception) {
+                            // Fallback 2: Press Enter via AWT Robot (bypasses HTTP layer)
+                            println("    RemoteRobot Enter failed, trying AWT Robot direct: ${e3.message}")
+                            try {
+                                executor.pressKeyDirect("enter")
+                                // Longer wait (1000ms) for dialog to close after Enter
+                                Thread.sleep(1000)
+                                ActionResult(true, "Pressed Enter (AWT Robot) as fallback for '$target'")
+                            } catch (e4: Exception) {
+                                ActionResult(false, "Could not click '$target' (menu: ${e.message}, button: ${e2.message}, enter: ${e3.message}, awt: ${e4.message})")
+                            }
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
             ActionResult(false, "Failed to click '$target': ${e.message}")
         }
+    }
+
+    /**
+     * Execute a menu item click with full LLM-based state analysis.
+     */
+    private fun executeMenuClick(target: String): ActionResult {
+        // Get pre-click popup count for comparison
+        val preClickUiTree = uiTreeProvider()
+        val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
+
+        executor.clickMenuItem(target)
+        // Wait for menu action to take effect
+        Thread.sleep(800)
+
+        // ALWAYS wait for UI changes and classify - no keyword-based shortcuts
+        val waitResult = waitForUIElement(timeoutMs = 2000)
+
+        // Get fresh UI tree for LLM analysis
+        val postClickUiTree = uiTreeProvider()
+
+        // ALWAYS use LLM-based state analysis to classify what happened
+        val analysis = analyzeToolResponse(
+            toolName = target,
+            uiTree = postClickUiTree,
+            goal = "",  // Goal would be passed from context
+            preClickPopupCount = preClickPopupCount
+        )
+
+        println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
+
+        // Return result with analysis data
+        return ActionResult(
+            success = true,
+            message = "Clicked menu item '$target' - ${analysis.description}",
+            data = mapOf(
+                "analysis" to analysis,
+                "stateType" to analysis.stateType.name,
+                "isSubmenu" to analysis.isSubmenu,
+                "isToolTriggered" to analysis.isToolTriggered,
+                "availableItems" to analysis.availableItems,
+                "confirmAction" to analysis.confirmAction,
+                "dialogFields" to analysis.dialogFields
+            )
+        )
     }
 
     /**
@@ -313,12 +400,8 @@ Return JSON:
                 }
             }
             
-            if (action.clearFirst) {
-                // Select all first (Ctrl+A)
-                executor.pressShortcut("ctrl A")
-                Thread.sleep(100)
-            }
-            executor.typeInDialog(action.text)
+            // typeInDialog handles clearFirst internally via select-all for dialog fields
+            executor.typeInDialog(action.text, clearFirst = action.clearFirst)
             Thread.sleep(action.text.length * 20L)
             ActionResult(true, "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})")
         } catch (e: Exception) {
@@ -539,7 +622,19 @@ Return JSON:
             .replace("{{UI_SNAPSHOT}}", uiSnapshot)
         
         return try {
-            val response = llm.chatStructured("You are a UI state analysis agent for IDE automation.", prompt)
+            // Create log context for UI state analysis
+            val logContext = PromptLogger.LogContext(
+                caller = "ActionGenerator.analyzeToolResponse",
+                intent = goal,
+                iteration = null,
+                actionHistorySummary = "Tool: $toolName, Popups: $popupCount (was $preClickPopupCount)"
+            )
+
+            val response = llm.chatStructured(
+                "You are a UI state analysis agent for IDE automation.",
+                prompt,
+                logContext
+            )
             
             // Parse LLM response
             val stateType = extractJsonString(response, "state_type") ?: "unknown"

@@ -63,6 +63,98 @@ object UiTreeFormatter {
     }
 
     /**
+     * Format UI tree with focus on active dialog/popup if present.
+     * When a dialog or popup is open, only that component is formatted.
+     * This reduces noise and helps the LLM focus on the relevant UI.
+     */
+    fun formatFocused(
+        uiTree: List<UiComponent>,
+        profile: ApplicationProfile,
+        maxDepth: Int = 15,
+        maxElements: Int = 200
+    ): String {
+        val sb = StringBuilder()
+        
+        sb.append("## Current UI State\n\n")
+        
+        // Check for focused component (dialog/popup)
+        val focusedComponent = extractFocusedComponent(uiTree, profile)
+        
+        if (focusedComponent != null) {
+            // Format only the focused component
+            sb.append("### Active ${focusedComponent.type}\n\n")
+            sb.append("```\n")
+            formatComponent(focusedComponent.component, profile, 0, maxDepth, sb, intArrayOf(0), maxElements)
+            sb.append("```\n")
+        } else {
+            // Format full tree (existing behavior)
+            val windowSummary = detectWindows(uiTree, profile)
+            sb.append(windowSummary.summary).append("\n\n")
+            sb.append("### UI Components\n\n")
+            sb.append("```\n")
+            for (component in uiTree) {
+                formatComponent(component, profile, 0, maxDepth, sb, intArrayOf(0), maxElements)
+            }
+            sb.append("```\n")
+        }
+        
+        return sb.toString()
+    }
+
+    /**
+     * Data class to hold focused component information.
+     */
+    private data class FocusedComponent(
+        val type: String,
+        val component: UiComponent
+    )
+
+    /**
+     * Extract the focused component (dialog/popup) from the UI tree.
+     * Priority: Dialog > Inline widget (popup with text input) > Popup menu
+     */
+    private fun extractFocusedComponent(
+        uiTree: List<UiComponent>,
+        profile: ApplicationProfile
+    ): FocusedComponent? {
+        val allComponents = UiTreeParser.flatten(uiTree)
+        
+        // Helper functions with fallback for known IntelliJ classes
+        // These fallbacks handle cases where the profile doesn't have the class mapped yet
+        fun isPopupWindow(cls: String): Boolean =
+            profile.isPopupWindow(cls) || cls == "HeavyWeightWindow"
+        
+        fun isDialog(cls: String): Boolean =
+            profile.isDialog(cls) || cls == "DialogRootPane" || cls == "MyDialog"
+        
+        // Priority 1: Dialog
+        val dialog = allComponents.firstOrNull { isDialog(it.cls) }
+        if (dialog != null) {
+            return FocusedComponent("Dialog", dialog)
+        }
+        
+        // Priority 2: Inline widget (popup with text input)
+        val inlineWidget = allComponents.firstOrNull { component ->
+            isPopupWindow(component.cls) &&
+            component.children.any { child ->
+                profile.isTextInput(child.cls) ||
+                profile.roleOf(child.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
+            }
+        }
+        if (inlineWidget != null) {
+            return FocusedComponent("Inline Widget", inlineWidget)
+        }
+        
+        // Priority 3: Popup menu
+        val popup = allComponents.firstOrNull { isPopupWindow(it.cls) }
+        if (popup != null) {
+            return FocusedComponent("Popup", popup)
+        }
+        
+        return null
+    }
+
+    /**
      * Detect window types from the UI tree.
      */
     private fun detectWindows(
@@ -134,6 +226,7 @@ object UiTreeFormatter {
         val role = determineRole(component.cls, profile)
         val name = component.accessibleName.ifBlank { component.text }
         val disabled = if (!component.enabled) " [disabled]" else ""
+        val focusMarker = if (component.focused) " *" else ""
         
         // Build the line
         val clsShort = component.cls.substringAfterLast(".")
@@ -143,11 +236,23 @@ object UiTreeFormatter {
             sb.append(" '").append(name).append("'")
         }
         
+        // NEW: Include value if present
+        component.value?.let { v ->
+            if (v.isNotBlank()) {
+                sb.append(" = \"").append(v).append("\"")
+            }
+        }
+        
+        // NEW: Include selected state for checkboxes
+        if (component.selected) {
+            sb.append(" [checked]")
+        }
+        
         if (role != "unknown") {
             sb.append(" (").append(role).append(")")
         }
         
-        sb.append(disabled).append("\n")
+        sb.append(disabled).append(focusMarker).append("\n")
         
         // Format children
         for (child in component.children) {

@@ -492,17 +492,58 @@ echo ""
 echo "=== Diagnostic Complete ==="
 ```
 
+## THE FIX (Session 18954b1d)
+
+**Root Cause:** macOS keyboard input handling issue, NOT Remote Robot API incompatibility!
+
+### The Problem:
+- On macOS, `robot.keyboard { key(...) }` sends keyboard events to the **focused window**
+- However, these events may not reach IntelliJ correctly due to focus issues
+- The "FindComponentsResponse serialization error" was a red herring
+
+### The Solution:
+Use **AppleScript to send keystrokes directly to the IntelliJ process**, NOT through the focused window.
+
+**Implementation (from KeyboardActionTest.kt):**
+```kotlin
+private fun sendKeystrokeToIntelliJ(
+    keyName: String,
+    modifiers: List<String> = emptyList()
+) {
+    val script = """
+        tell application "System Events"
+            tell process "IntelliJ IDEA"
+                keystroke "$keyName" using {${modifiers.joinToString(", ")}}"
+            end tell
+        end tell
+    """.trimIndent()
+
+    val processBuilder = ProcessBuilder("osascript", "-e", script)
+    val result = processBuilder.start().waitFor()
+}
+```
+
+**Key Changes:**
+1. Don't use `robot.keyboard { ... }` on macOS
+2. Instead, use `ProcessBuilder("osascript", "-e", script)` to send keystrokes directly to IntelliJ
+3. Always bring IntelliJ to front first: `tell application "System Events" to set frontmost of the first process whose name is "idea" to true`
+
+### What Was Fixed:
+- `UiExecutor.kt` - Updated to use AppleScript for macOS keyboard input
+- `GraphAgent.kt` - May need similar updates for press_key actions
+- All test files updated with proper macOS keyboard handling
+
+### How to Apply the Fix:
+1. Check if `UiExecutor.pressKey()` and similar methods use AppleScript on macOS
+2. Update any keyboard action methods in GraphAgent to use AppleScript
+3. Test with simple test: `./gradlew test --tests KeyboardActionTest`
+
 ## Expected Outcomes
 
 ### If Baseline Agent Works:
 - The issue is NOT with Remote Robot setup
 - The issue is in how the graph agent calls the API
-- Focus on differences between `GraphAgent.kt` and `UiAgent.kt`
-
-### If Baseline Agent Fails:
-- The issue IS with Remote Robot setup
-- Compare your setup with your friend's setup
-- Check IntelliJ version, plugin version, JVM version, `idea.vmoptions`
+- Focus on differences in keyboard input handling between baseline and graph agent
 
 ### If Minimal Remote Robot Test Works:
 - The API itself is functional

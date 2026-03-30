@@ -9,20 +9,13 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
 /**
- * [UiTreeProvider] implementation for applications that expose their
- * component tree as HTML (e.g., IntelliJ Robot Server).
+ * Fetches UI component tree from IntelliJ Remote Robot Server via HTTP.
  *
- * This is the single place that depends on HTTP + Jsoup.  Swapping to a
- * different format (XML, JSON, native API) means creating a new
- * [UiTreeProvider] implementation — no other files change.
- *
- * @param endpoint  URL that returns the raw HTML tree
- *                  (e.g. "http://localhost:8082" for IntelliJ Robot Server)
+ * The endpoint returns HTML which is parsed into UiComponent objects.
  */
 class HtmlUiTreeProvider(
-    private val endpoint: String = "http://localhost:8082"
+    private val endpoint: String = "http://localhost:8082",
 ) : UiTreeProvider {
-
     private val http = HttpClient.newHttpClient()
 
     override fun fetchTree(): List<UiComponent> {
@@ -41,19 +34,12 @@ class HtmlUiTreeProvider(
                 .uri(URI.create(endpoint))
                 .GET()
                 .build(),
-            HttpResponse.BodyHandlers.ofString()
+            HttpResponse.BodyHandlers.ofString(),
         )
         return response.body()
     }
 
     companion object {
-        /**
-         * Walk every element in the raw HTML and collect per-class structural
-         * metadata.  This is an unfiltered walk — no classes are skipped.
-         *
-         * Kept as a static method so [UIProfiler] can also call it for
-         * incremental classification when it only has raw HTML available.
-         */
         fun collectClassContextsFromHtml(html: String): Map<String, UIProfiler.ClassContext> {
             val doc = Jsoup.parse(html)
             val contexts = mutableMapOf<String, UIProfiler.ClassContext>()
@@ -64,7 +50,7 @@ class HtmlUiTreeProvider(
         private fun walkElement(
             el: Element,
             parentClass: String,
-            contexts: MutableMap<String, UIProfiler.ClassContext>
+            contexts: MutableMap<String, UIProfiler.ClassContext>,
         ) {
             val cls = el.attr("class").trim()
             if (cls.isBlank()) {

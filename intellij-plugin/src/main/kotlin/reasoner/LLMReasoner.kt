@@ -1,12 +1,12 @@
 package reasoner
 
-import llm.LlmClient
+import formatter.UiTreeFormatter
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import llm.LlmClient
 import parser.UiComponent
 import profile.ApplicationProfile
-import formatter.UiTreeFormatter
 import recipe.VerifiedRecipe
 
 /**
@@ -22,7 +22,6 @@ import recipe.VerifiedRecipe
  * and deciding what to do next.
  */
 class LLMReasoner(private val llm: LlmClient) {
-
     /**
      * A decision made by the LLM.
      */
@@ -31,7 +30,7 @@ class LLMReasoner(private val llm: LlmClient) {
         val action: Action,
         val expectedResult: String,
         val confidence: Double,
-        val taskComplete: Boolean = false
+        val taskComplete: Boolean = false,
     )
 
     /**
@@ -43,19 +42,29 @@ class LLMReasoner(private val llm: LlmClient) {
     sealed class Action {
         // Navigation actions (for IDE file/symbol navigation)
         data class OpenFile(val path: String) : Action()
+
         data class MoveCaret(val symbol: String) : Action()
+
         data class SelectLines(val start: Int, val end: Int) : Action()
-        
+
         // UI interaction actions
         data class Click(val target: String) : Action()
+
         data class Type(val text: String, val clearFirst: Boolean = true, val target: String? = null) : Action()
+
         data class PressKey(val key: String) : Action()
+
         data class SelectDropdown(val target: String, val value: String) : Action()
+
         data class Wait(val elementType: String, val timeoutMs: Long = 5000) : Action()
+
         data class UseRecipe(val recipeId: String, val params: Map<String, String>) : Action()
-        data object Observe : Action()  // Just observe, don't act
-        data object Complete : Action()  // Task is complete
-        data object Fail : Action()      // Cannot proceed
+
+        data object Observe : Action() // Just observe, don't act
+
+        data object Complete : Action() // Task is complete
+
+        data object Fail : Action() // Cannot proceed
     }
 
     /**
@@ -64,11 +73,11 @@ class LLMReasoner(private val llm: LlmClient) {
      */
     data class DecisionContext(
         val intent: String,
-        val uiTree: List<UiComponent>,  // Raw UI tree - formatted directly for LLM
-        val profile: ApplicationProfile,  // Profile for role detection
+        val uiTree: List<UiComponent>, // Raw UI tree - formatted directly for LLM
+        val profile: ApplicationProfile, // Profile for role detection
         val actionHistory: List<HistoryEntry>,
-        val matchedRecipe: MatchedRecipe? = null,  // Full recipe with step tracking
-        val parsedIntent: ParsedIntent? = null  // Extracted parameters from intent
+        val matchedRecipe: MatchedRecipe? = null, // Full recipe with step tracking
+        val parsedIntent: ParsedIntent? = null, // Extracted parameters from intent
     )
 
     /**
@@ -81,7 +90,7 @@ class LLMReasoner(private val llm: LlmClient) {
         val lineStart: Int? = null,
         val lineEnd: Int? = null,
         val newName: String? = null,
-        val operation: String? = null
+        val operation: String? = null,
     ) {
         fun format(): String {
             val parts = mutableListOf<String>()
@@ -94,7 +103,9 @@ class LLMReasoner(private val llm: LlmClient) {
             operation?.let { parts.add("Operation: $it") }
             return if (parts.isNotEmpty()) {
                 parts.joinToString("\n") { "- $it" }
-            } else ""
+            } else {
+                ""
+            }
         }
     }
 
@@ -104,7 +115,7 @@ class LLMReasoner(private val llm: LlmClient) {
     data class HistoryEntry(
         val action: Action,
         val result: String,
-        val success: Boolean
+        val success: Boolean,
     )
 
     /**
@@ -112,8 +123,8 @@ class LLMReasoner(private val llm: LlmClient) {
      */
     data class MatchedRecipe(
         val recipe: VerifiedRecipe,
-        val currentStep: Int = 0,  // Which step we're on (0-indexed)
-        val params: Map<String, String> = emptyMap()  // Bound parameters
+        val currentStep: Int = 0, // Which step we're on (0-indexed)
+        val params: Map<String, String> = emptyMap(), // Bound parameters
     ) {
         /**
          * Get the current step to execute.
@@ -150,7 +161,7 @@ class LLMReasoner(private val llm: LlmClient) {
     data class RecipeSummary(
         val id: String,
         val intentPattern: String,
-        val successCount: Int
+        val successCount: Int,
     )
 
     companion object {
@@ -264,7 +275,7 @@ Return JSON (only JSON, no other text):
                 action = Action.Observe,
                 expectedResult = "Get fresh UI state",
                 confidence = 0.5,
-                taskComplete = false
+                taskComplete = false,
             )
         }
     }
@@ -273,12 +284,15 @@ Return JSON (only JSON, no other text):
      * Build the prompt for the LLM.
      */
     private fun buildPrompt(context: DecisionContext): String {
-        val paramsSection = context.parsedIntent?.let { parsed ->
-            val formatted = parsed.format()
-            if (formatted.isNotEmpty()) {
-                "## Extracted Parameters\nUse these exact values in your actions!\n$formatted"
-            } else ""
-        } ?: ""
+        val paramsSection =
+            context.parsedIntent?.let { parsed ->
+                val formatted = parsed.format()
+                if (formatted.isNotEmpty()) {
+                    "## Extracted Parameters\nUse these exact values in your actions!\n$formatted"
+                } else {
+                    ""
+                }
+            } ?: ""
 
         return DECISION_PROMPT
             .replace("{{INTENT}}", context.intent)
@@ -314,11 +328,12 @@ Use the available primitive actions and observe the UI after each action."""
 
         for ((index, action) in recipe.successfulActions.withIndex()) {
             val stepNum = index + 1
-            val status = when {
-                index < currentStep -> "✓ DONE"
-                index == currentStep -> "→ CURRENT"
-                else -> "  PENDING"
-            }
+            val status =
+                when {
+                    index < currentStep -> "✓ DONE"
+                    index == currentStep -> "→ CURRENT"
+                    else -> "  PENDING"
+                }
 
             sb.append("**Step $stepNum** [$status]\n")
             sb.append("Expected UI: ${action.uiStateDescription}\n")
@@ -340,11 +355,12 @@ Use the available primitive actions and observe the UI after each action."""
      * Format an action JSON for display.
      */
     private fun formatActionJson(action: VerifiedRecipe.ActionJson): String {
-        val params = if (action.params.isNotEmpty()) {
-            action.params.entries.joinToString(", ") { "${it.key}='${it.value}'" }
-        } else {
-            ""
-        }
+        val params =
+            if (action.params.isNotEmpty()) {
+                action.params.entries.joinToString(", ") { "${it.key}='${it.value}'" }
+            } else {
+                ""
+            }
         return "${action.type}($params)"
     }
 
@@ -352,7 +368,10 @@ Use the available primitive actions and observe the UI after each action."""
      * Format the UI state for the prompt using direct tree formatting.
      * No intermediate UIObservation - format UiComponent tree directly.
      */
-    private fun formatUIState(uiTree: List<UiComponent>, profile: ApplicationProfile): String {
+    private fun formatUIState(
+        uiTree: List<UiComponent>,
+        profile: ApplicationProfile,
+    ): String {
         return UiTreeFormatter.format(uiTree, profile)
     }
 
@@ -412,7 +431,7 @@ Use the available primitive actions and observe the UI after each action."""
         val expectedResult: String = "",
         val confidence: Double = 0.5,
         @SerialName("task_complete")
-        val taskComplete: Boolean = false
+        val taskComplete: Boolean = false,
     )
 
     /**
@@ -439,7 +458,7 @@ Use the available primitive actions and observe the UI after each action."""
         val timeout: Long? = null,
         @SerialName("recipeId")
         val recipeId: String? = null,
-        val params: Map<String, String>? = null
+        val params: Map<String, String>? = null,
     ) {
         /**
          * Convert DTO to domain Action.
@@ -449,30 +468,35 @@ Use the available primitive actions and observe the UI after each action."""
                 // Navigation actions
                 "open_file" -> Action.OpenFile(path ?: "")
                 "move_caret" -> Action.MoveCaret(symbol ?: "")
-                "select_lines" -> Action.SelectLines(
-                    start = start ?: 1,
-                    end = end ?: start ?: 1
-                )
+                "select_lines" ->
+                    Action.SelectLines(
+                        start = start ?: 1,
+                        end = end ?: start ?: 1,
+                    )
                 // UI interaction actions
                 "click" -> Action.Click(target ?: "")
-                "type" -> Action.Type(
-                    text = text ?: "",
-                    clearFirst = clearFirst ?: true,
-                    target = target
-                )
+                "type" ->
+                    Action.Type(
+                        text = text ?: "",
+                        clearFirst = clearFirst ?: true,
+                        target = target,
+                    )
                 "press_key" -> Action.PressKey(key ?: "Enter")
-                "select_dropdown" -> Action.SelectDropdown(
-                    target = target ?: "",
-                    value = value ?: ""
-                )
-                "wait" -> Action.Wait(
-                    elementType = elementType ?: "dialog",
-                    timeoutMs = timeout ?: 5000
-                )
-                "use_recipe" -> Action.UseRecipe(
-                    recipeId = recipeId ?: "",
-                    params = params ?: emptyMap()
-                )
+                "select_dropdown" ->
+                    Action.SelectDropdown(
+                        target = target ?: "",
+                        value = value ?: "",
+                    )
+                "wait" ->
+                    Action.Wait(
+                        elementType = elementType ?: "dialog",
+                        timeoutMs = timeout ?: 5000,
+                    )
+                "use_recipe" ->
+                    Action.UseRecipe(
+                        recipeId = recipeId ?: "",
+                        params = params ?: emptyMap(),
+                    )
                 // Control actions
                 "observe" -> Action.Observe
                 "complete" -> Action.Complete
@@ -486,11 +510,12 @@ Use the available primitive actions and observe the UI after each action."""
     /**
      * JSON parser configuration for lenient parsing.
      */
-    private val jsonParser = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        coerceInputValues = true
-    }
+    private val jsonParser =
+        Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
 
     /**
      * Parse the LLM response into a Decision using structured JSON parsing.
@@ -499,29 +524,29 @@ Use the available primitive actions and observe the UI after each action."""
         return try {
             // Extract JSON from response (handles markdown code blocks)
             val jsonText = extractJsonFromResponse(response)
-            
+
             // Parse using kotlinx.serialization
             val dto = jsonParser.decodeFromString<LLMDecisionDto>(jsonText)
-            
+
             // Convert DTO to domain model
             Decision(
                 reasoning = dto.reasoning.ifBlank { "No reasoning provided" },
                 action = dto.action?.toAction() ?: Action.Observe,
                 expectedResult = dto.expectedResult,
                 confidence = dto.confidence.coerceIn(0.0, 1.0),
-                taskComplete = dto.taskComplete
+                taskComplete = dto.taskComplete,
             )
         } catch (e: Exception) {
             println("  LLMReasoner: Failed to parse LLM response: ${e.message}")
             println("  Response preview: ${response.take(500)}")
-            
+
             // Return Observe action on parse failure
             Decision(
                 reasoning = "Failed to parse LLM response: ${e.message}",
                 action = Action.Observe,
                 expectedResult = "Get fresh UI state",
                 confidence = 0.5,
-                taskComplete = false
+                taskComplete = false,
             )
         }
     }
@@ -536,7 +561,7 @@ Use the available primitive actions and observe the UI after each action."""
         codeBlockRegex.find(response)?.let {
             return it.groupValues[1].trim()
         }
-        
+
         // Try to find raw JSON object (outermost braces)
         var braceCount = 0
         var startIndex = -1
@@ -554,7 +579,7 @@ Use the available primitive actions and observe the UI after each action."""
                 }
             }
         }
-        
+
         // Return as-is if no JSON structure found
         return response.trim()
     }

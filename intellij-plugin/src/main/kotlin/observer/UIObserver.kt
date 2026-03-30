@@ -17,7 +17,6 @@ import profile.ComponentRole
  * The output is a structured observation that the LLM can use to make decisions.
  */
 class UIObserver(private val profile: ApplicationProfile) {
-
     /**
      * Observation of the current UI state.
      */
@@ -26,7 +25,7 @@ class UIObserver(private val profile: ApplicationProfile) {
         val focusedElement: ElementInfo?,
         val availableActions: List<ActionInfo>,
         val contextDescription: String,
-        val rawUiTree: List<UiComponent>? = null
+        val rawUiTree: List<UiComponent>? = null,
     )
 
     /**
@@ -36,19 +35,19 @@ class UIObserver(private val profile: ApplicationProfile) {
         val type: WindowType,
         val title: String,
         val elements: List<ElementInfo>,
-        val bounds: Bounds? = null
+        val bounds: Bounds? = null,
     )
 
     /**
      * Type of window detected in the UI.
      */
     enum class WindowType {
-        MAIN_EDITOR,    // Main editor window
-        DIALOG,         // Modal dialog
-        POPUP,          // Popup menu or chooser
-        INLINE_WIDGET,  // Inline widget (e.g., rename popup in editor)
-        CONTEXT_MENU,   // Right-click context menu
-        UNKNOWN         // Unrecognized window type
+        MAIN_EDITOR, // Main editor window
+        DIALOG, // Modal dialog
+        POPUP, // Popup menu or chooser
+        INLINE_WIDGET, // Inline widget (e.g., rename popup in editor)
+        CONTEXT_MENU, // Right-click context menu
+        UNKNOWN, // Unrecognized window type
     }
 
     /**
@@ -56,21 +55,32 @@ class UIObserver(private val profile: ApplicationProfile) {
      */
     data class ElementInfo(
         val role: ElementRole,
-        val label: String,          // Visible text or accessible name
-        val value: String? = null,  // Current value for inputs
+        val label: String, // Visible text or accessible name
+        val value: String? = null, // Current value for inputs
         val enabled: Boolean = true,
         val focused: Boolean = false,
         val bounds: Bounds? = null,
-        val options: List<String>? = null,  // For dropdowns
-        val isChecked: Boolean? = null      // For checkboxes
+        val options: List<String>? = null, // For dropdowns
+        val isChecked: Boolean? = null, // For checkboxes
     )
 
     /**
      * Role of an interactive element.
      */
     enum class ElementRole {
-        BUTTON, TEXT_FIELD, TEXT_AREA, DROPDOWN, CHECKBOX, LABEL,
-        TREE, TABLE, LIST, MENU_ITEM, TAB, ICON, UNKNOWN
+        BUTTON,
+        TEXT_FIELD,
+        TEXT_AREA,
+        DROPDOWN,
+        CHECKBOX,
+        LABEL,
+        TREE,
+        TABLE,
+        LIST,
+        MENU_ITEM,
+        TAB,
+        ICON,
+        UNKNOWN,
     }
 
     /**
@@ -80,7 +90,7 @@ class UIObserver(private val profile: ApplicationProfile) {
         val x: Int,
         val y: Int,
         val width: Int,
-        val height: Int
+        val height: Int,
     )
 
     /**
@@ -89,7 +99,7 @@ class UIObserver(private val profile: ApplicationProfile) {
     data class ActionInfo(
         val name: String,
         val description: String,
-        val shortcut: String? = null
+        val shortcut: String? = null,
     )
 
     /**
@@ -109,7 +119,7 @@ class UIObserver(private val profile: ApplicationProfile) {
             focusedElement = focusedElement,
             availableActions = availableActions,
             contextDescription = contextDescription,
-            rawUiTree = uiTree
+            rawUiTree = uiTree,
         )
     }
 
@@ -119,53 +129,58 @@ class UIObserver(private val profile: ApplicationProfile) {
      */
     private fun detectWindows(uiTree: List<UiComponent>): List<WindowInfo> {
         val windows = mutableListOf<WindowInfo>()
-        
+
         // First, check top-level components (existing behavior)
         for (component in uiTree) {
             println("    [UIObserver] Checking component: ${component.cls.take(50)}")
-            
+
             val window = detectWindow(component)
             if (window != null) {
                 println("    [UIObserver] Detected window: ${window.type} - ${window.title}")
                 windows.add(window)
             }
         }
-        
+
         // Also search ALL components recursively for dialogs/popups that might be nested
         // This is important for IntelliJ where dialogs can be embedded in the frame
         if (windows.isEmpty() || windows.all { it.type == WindowType.MAIN_EDITOR }) {
             val allComponents = UiTreeParser.flatten(uiTree)
             println("    [UIObserver] Searching ${allComponents.size} flattened components for dialogs/popups...")
-            
+
             for (component in allComponents) {
                 val className = component.cls
-                
+
                 // Check for dialog using profile
                 if (profile.isDialog(className)) {
-                    val title = component.accessibleName.ifBlank { 
-                        component.text.ifBlank { "Dialog" } 
-                    }
+                    val title =
+                        component.accessibleName.ifBlank {
+                            component.text.ifBlank { "Dialog" }
+                        }
                     // Avoid duplicates
                     if (windows.none { it.title == title && it.type == WindowType.DIALOG }) {
                         println("    [UIObserver] Found nested DIALOG: $title")
-                        windows.add(WindowInfo(
-                            type = WindowType.DIALOG,
-                            title = title,
-                            elements = extractElements(component.children)
-                        ))
+                        windows.add(
+                            WindowInfo(
+                                type = WindowType.DIALOG,
+                                title = title,
+                                elements = extractElements(component.children),
+                            ),
+                        )
                     }
                 }
-                
+
                 // Check for popup using profile
                 if (profile.isPopupWindow(className)) {
                     val title = component.accessibleName.ifBlank { "Popup" }
                     if (windows.none { it.title == title && it.type == WindowType.POPUP }) {
                         println("    [UIObserver] Found nested POPUP: $title")
-                        windows.add(WindowInfo(
-                            type = WindowType.POPUP,
-                            title = title,
-                            elements = extractElements(component.children)
-                        ))
+                        windows.add(
+                            WindowInfo(
+                                type = WindowType.POPUP,
+                                title = title,
+                                elements = extractElements(component.children),
+                            ),
+                        )
                     }
                 }
             }
@@ -174,11 +189,13 @@ class UIObserver(private val profile: ApplicationProfile) {
         // If no windows detected, treat the whole tree as main editor
         if (windows.isEmpty() && uiTree.isNotEmpty()) {
             println("    [UIObserver] No windows detected, treating as main editor")
-            windows.add(WindowInfo(
-                type = WindowType.MAIN_EDITOR,
-                title = "Editor",
-                elements = extractElements(uiTree)
-            ))
+            windows.add(
+                WindowInfo(
+                    type = WindowType.MAIN_EDITOR,
+                    title = "Editor",
+                    elements = extractElements(uiTree),
+                ),
+            )
         }
 
         return windows
@@ -195,7 +212,7 @@ class UIObserver(private val profile: ApplicationProfile) {
                 WindowInfo(
                     type = WindowType.DIALOG,
                     title = component.accessibleName.ifBlank { component.text.ifBlank { "Dialog" } },
-                    elements = extractElements(component.children)
+                    elements = extractElements(component.children),
                 )
             }
             profile.isPopupWindow(className) -> {
@@ -204,21 +221,21 @@ class UIObserver(private val profile: ApplicationProfile) {
                 WindowInfo(
                     type = if (isContextMenu) WindowType.CONTEXT_MENU else WindowType.POPUP,
                     title = component.accessibleName.ifBlank { "Popup" },
-                    elements = extractElements(component.children)
+                    elements = extractElements(component.children),
                 )
             }
             isInlineWidget(component) -> {
                 WindowInfo(
                     type = WindowType.INLINE_WIDGET,
                     title = "Inline Widget",
-                    elements = extractElements(listOf(component))
+                    elements = extractElements(listOf(component)),
                 )
             }
             profile.isEditor(className) -> {
                 WindowInfo(
                     type = WindowType.MAIN_EDITOR,
                     title = "Editor",
-                    elements = extractElements(component.children)
+                    elements = extractElements(component.children),
                 )
             }
             else -> null
@@ -237,26 +254,28 @@ class UIObserver(private val profile: ApplicationProfile) {
      */
     private fun isInlineWidget(component: UiComponent): Boolean {
         val className = component.cls
-        
+
         // Only popup windows can be inline widgets
         if (!profile.isPopupWindow(className)) {
             return false
         }
-        
+
         // Check if this popup contains a text input (the inline editor)
-        val hasTextInput = component.children.any { child ->
-            profile.isTextInput(child.cls) ||
-            profile.roleOf(child.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
-        }
-        
-        // Also check nested children (popup -> panel -> text input)
-        val hasNestedTextInput = component.children.any { child ->
-            child.children.any { grandchild ->
-                profile.isTextInput(grandchild.cls) ||
-                profile.roleOf(grandchild.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
+        val hasTextInput =
+            component.children.any { child ->
+                profile.isTextInput(child.cls) ||
+                    profile.roleOf(child.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
             }
-        }
-        
+
+        // Also check nested children (popup -> panel -> text input)
+        val hasNestedTextInput =
+            component.children.any { child ->
+                child.children.any { grandchild ->
+                    profile.isTextInput(grandchild.cls) ||
+                        profile.roleOf(grandchild.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
+                }
+            }
+
         return hasTextInput || hasNestedTextInput
     }
 
@@ -284,7 +303,10 @@ class UIObserver(private val profile: ApplicationProfile) {
     /**
      * Recursively extract elements from a component tree.
      */
-    private fun extractElementsRecursive(component: UiComponent, elements: MutableList<ElementInfo>) {
+    private fun extractElementsRecursive(
+        component: UiComponent,
+        elements: MutableList<ElementInfo>,
+    ) {
         val element = extractElement(component)
         if (element != null) {
             elements.add(element)
@@ -306,11 +328,12 @@ class UIObserver(private val profile: ApplicationProfile) {
 
         // For buttons, be more lenient - use text as fallback
         // Buttons in IntelliJ often have text but no accessibleName/label
-        val label = when (role) {
-            ElementRole.BUTTON -> component.label.ifBlank { component.text }
-            ElementRole.MENU_ITEM -> component.label.ifBlank { component.text }
-            else -> component.label
-        }
+        val label =
+            when (role) {
+                ElementRole.BUTTON -> component.label.ifBlank { component.text }
+                ElementRole.MENU_ITEM -> component.label.ifBlank { component.text }
+                else -> component.label
+            }
 
         if (label.isBlank() && role != ElementRole.ICON) return null
 
@@ -319,17 +342,20 @@ class UIObserver(private val profile: ApplicationProfile) {
             label = label,
             value = component.text.ifBlank { null },
             enabled = component.enabled,
-            focused = false,  // UiComponent doesn't have focused state
-            bounds = null,  // UiComponent doesn't have bounds
+            focused = false, // UiComponent doesn't have focused state
+            bounds = null, // UiComponent doesn't have bounds
             options = extractOptions(component, role),
-            isChecked = null
+            isChecked = null,
         )
     }
 
     /**
      * Determine the role of an element from its class name.
      */
-    private fun determineRole(className: String, component: UiComponent): ElementRole {
+    private fun determineRole(
+        className: String,
+        component: UiComponent,
+    ): ElementRole {
         return when {
             profile.isButton(className) -> ElementRole.BUTTON
             profile.isTextInput(className) -> ElementRole.TEXT_FIELD
@@ -356,7 +382,10 @@ class UIObserver(private val profile: ApplicationProfile) {
     /**
      * Extract options from a dropdown component.
      */
-    private fun extractOptions(component: UiComponent, role: ElementRole): List<String>? {
+    private fun extractOptions(
+        component: UiComponent,
+        role: ElementRole,
+    ): List<String>? {
         if (role != ElementRole.DROPDOWN) return null
         // Look for child items with text
         return component.children.mapNotNull { child ->
@@ -407,7 +436,10 @@ class UIObserver(private val profile: ApplicationProfile) {
     /**
      * Build a human-readable context description for the LLM.
      */
-    private fun buildContextDescription(windows: List<WindowInfo>, focusedElement: ElementInfo?): String {
+    private fun buildContextDescription(
+        windows: List<WindowInfo>,
+        focusedElement: ElementInfo?,
+    ): String {
         val sb = StringBuilder()
 
         when {
@@ -455,12 +487,13 @@ class UIObserver(private val profile: ApplicationProfile) {
                 sb.append("**${window.type.name}**: ${window.title}\n")
                 if (window.elements.isNotEmpty()) {
                     sb.append("Elements:\n")
-                    for (elem in window.elements.take(20)) {  // Limit to avoid token limits
-                        val state = when {
-                            !elem.enabled -> " (disabled)"
-                            elem.focused -> " (focused)"
-                            else -> ""
-                        }
+                    for (elem in window.elements.take(20)) { // Limit to avoid token limits
+                        val state =
+                            when {
+                                !elem.enabled -> " (disabled)"
+                                elem.focused -> " (focused)"
+                                else -> ""
+                            }
                         val value = elem.value?.let { " = '$it'" } ?: ""
                         sb.append("  - ${elem.role.name.lowercase()}: '${elem.label}'$value$state\n")
                     }

@@ -1,0 +1,54 @@
+{
+    "pages": [
+        {
+            "id": "editor_idle",
+            "description": "Editor in idle state",
+            "visitCount": 11
+        },
+        {
+            "id": "context_menu",
+            "description": "Context menu with actions",
+            "visitCount": 29
+        }
+    ],
+    "elements": [
+        {
+            "id": "editor_idle::ActionButton::Search Everywhere",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Search Everywhere",
+            "xpath": "",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::unknown::unknown",
+            "pageId": "editor_idle",
+            "cls": "unknown",
+            "label": "unknown",
+            "xpath": "",
+            "role": "unknown"
+        }
+    ],
+    "transitions": [
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::ActionButton::Search Everywhere",
+            "action": "click",
+            "toPage": "context_menu",
+            "params": {
+                "target": "Search Everywhere"
+            }
+        },
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "press_key",
+            "toPage": "context_menu",
+            "params": {
+                "key": "escape"
+            }
+        }
+    ],
+    "shortcuts": [
+    ]
+}

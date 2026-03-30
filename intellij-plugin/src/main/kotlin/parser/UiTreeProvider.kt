@@ -17,7 +17,6 @@ import profile.UIProfiler
  * common types.
  */
 interface UiTreeProvider {
-
     /**
      * Fetch the current UI tree and return it as a list of parsed [UiComponent] roots.
      *

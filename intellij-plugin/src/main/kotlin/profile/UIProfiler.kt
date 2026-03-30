@@ -1,7 +1,7 @@
 package profile
 
-import llm.LlmClient
 import executor.UiExecutor
+import llm.LlmClient
 import parser.UiTreeProvider
 
 /**
@@ -26,23 +26,24 @@ class UIProfiler(
     private val treeProvider: UiTreeProvider,
     private val llm: LlmClient,
     private val profilePath: String = "build/reports/app-profile.json",
-    private val executor: UiExecutor? = null
+    private val executor: UiExecutor? = null,
 ) {
     companion object {
         private const val MAX_CLASSES_PER_BATCH = 60
 
-        private val CRITICAL_ROLES = setOf(
-            ComponentRole.POPUP_WINDOW,
-            ComponentRole.DIALOG,
-            ComponentRole.MENU_ITEM,
-            ComponentRole.MENU_CONTAINER,
-            ComponentRole.BUTTON,
-            ComponentRole.TEXT_FIELD,
-            ComponentRole.CHECKBOX,
-            ComponentRole.DROPDOWN,
-            ComponentRole.LIST,
-            ComponentRole.TABLE
-        )
+        private val CRITICAL_ROLES =
+            setOf(
+                ComponentRole.POPUP_WINDOW,
+                ComponentRole.DIALOG,
+                ComponentRole.MENU_ITEM,
+                ComponentRole.MENU_CONTAINER,
+                ComponentRole.BUTTON,
+                ComponentRole.TEXT_FIELD,
+                ComponentRole.CHECKBOX,
+                ComponentRole.DROPDOWN,
+                ComponentRole.LIST,
+                ComponentRole.TABLE,
+            )
 
         private const val SYSTEM_PROMPT = """You are a UI toolkit analyst. Given a list of UI component class names with structural context from a desktop application's accessibility / component tree, classify each into exactly one semantic role.
 
@@ -117,7 +118,7 @@ Return JSON array only, no markdown fences:
         val children: MutableSet<String> = mutableSetOf(),
         var hasText: Boolean = false,
         var hasAccessibleName: Boolean = false,
-        var hasTooltip: Boolean = false
+        var hasTooltip: Boolean = false,
     )
 
     // ── Public API ──────────────────────────────────────────────────────────
@@ -168,10 +169,11 @@ Return JSON array only, no markdown fences:
             println("  Phase 3: All critical roles covered — no inference needed")
         }
 
-        val profile = ApplicationProfile(
-            appName = appName,
-            classRoles = classifications.toMutableMap()
-        )
+        val profile =
+            ApplicationProfile(
+                appName = appName,
+                classRoles = classifications.toMutableMap(),
+            )
         profile.saveToFile(profilePath)
 
         println("\n  === Profile Summary ===")
@@ -191,17 +193,18 @@ Return JSON array only, no markdown fences:
     fun classifyNewClasses(
         profile: ApplicationProfile,
         unknowns: Set<String>,
-        contexts: Map<String, ClassContext>? = null
+        contexts: Map<String, ClassContext>? = null,
     ): Map<String, ComponentRole> {
         if (unknowns.isEmpty()) return emptyMap()
 
         println("  UIProfiler: classifying ${unknowns.size} new classes on-the-fly")
 
-        val contextList = if (contexts != null) {
-            unknowns.mapNotNull { contexts[it] }
-        } else {
-            unknowns.map { ClassContext(className = it, count = 1) }
-        }
+        val contextList =
+            if (contexts != null) {
+                unknowns.mapNotNull { contexts[it] }
+            } else {
+                unknowns.map { ClassContext(className = it, count = 1) }
+            }
 
         val newMappings = classifyAll(contextList)
         profile.merge(newMappings)
@@ -231,7 +234,10 @@ Return JSON array only, no markdown fences:
             Thread.sleep(300)
         } catch (e: Exception) {
             println("      Context menu probe failed: ${e.message}")
-            try { exec.dismissPopups() } catch (_: Exception) {}
+            try {
+                exec.dismissPopups()
+            } catch (_: Exception) {
+            }
         }
 
         // Probe 2: Search dialog → reveals DialogRootPane, JTextField, JButton, JBList
@@ -248,7 +254,10 @@ Return JSON array only, no markdown fences:
             Thread.sleep(300)
         } catch (e: Exception) {
             println("      Dialog probe failed: ${e.message}")
-            try { exec.dismissPopups() } catch (_: Exception) {}
+            try {
+                exec.dismissPopups()
+            } catch (_: Exception) {
+            }
         }
 
         return allNewContexts
@@ -256,7 +265,7 @@ Return JSON array only, no markdown fences:
 
     private fun mergeContexts(
         target: MutableMap<String, ClassContext>,
-        source: Map<String, ClassContext>
+        source: Map<String, ClassContext>,
     ) {
         for ((cls, srcCtx) in source) {
             val existing = target[cls]
@@ -268,15 +277,16 @@ Return JSON array only, no markdown fences:
                 existing.hasAccessibleName = existing.hasAccessibleName || srcCtx.hasAccessibleName
                 existing.hasTooltip = existing.hasTooltip || srcCtx.hasTooltip
             } else {
-                target[cls] = ClassContext(
-                    className = srcCtx.className,
-                    count = srcCtx.count,
-                    parents = srcCtx.parents.toMutableSet(),
-                    children = srcCtx.children.toMutableSet(),
-                    hasText = srcCtx.hasText,
-                    hasAccessibleName = srcCtx.hasAccessibleName,
-                    hasTooltip = srcCtx.hasTooltip
-                )
+                target[cls] =
+                    ClassContext(
+                        className = srcCtx.className,
+                        count = srcCtx.count,
+                        parents = srcCtx.parents.toMutableSet(),
+                        children = srcCtx.children.toMutableSet(),
+                        hasText = srcCtx.hasText,
+                        hasAccessibleName = srcCtx.hasAccessibleName,
+                        hasTooltip = srcCtx.hasTooltip,
+                    )
             }
         }
     }
@@ -299,15 +309,17 @@ Return JSON array only, no markdown fences:
 
     private fun inferMissingClasses(
         missingRoles: Set<ComponentRole>,
-        toolkitHint: String
+        toolkitHint: String,
     ): Map<String, ComponentRole> {
-        val rolesDescription = missingRoles.joinToString("\n") { role ->
-            "- ${role.name}: ${describeRole(role)}"
-        }
+        val rolesDescription =
+            missingRoles.joinToString("\n") { role ->
+                "- ${role.name}: ${describeRole(role)}"
+            }
 
-        val prompt = GAP_INFERENCE_PROMPT_TEMPLATE
-            .replace("{{TOOLKIT_HINT}}", toolkitHint)
-            .replace("{{MISSING_ROLES}}", rolesDescription)
+        val prompt =
+            GAP_INFERENCE_PROMPT_TEMPLATE
+                .replace("{{TOOLKIT_HINT}}", toolkitHint)
+                .replace("{{MISSING_ROLES}}", rolesDescription)
 
         return try {
             val response = llm.chatStructured(SYSTEM_PROMPT, prompt)
@@ -320,19 +332,20 @@ Return JSON array only, no markdown fences:
         }
     }
 
-    private fun describeRole(role: ComponentRole): String = when (role) {
-        ComponentRole.POPUP_WINDOW -> "floating overlay window for menus/popups"
-        ComponentRole.DIALOG -> "modal or modeless dialog container"
-        ComponentRole.MENU_ITEM -> "clickable leaf item in a menu"
-        ComponentRole.MENU_CONTAINER -> "menu header that opens a submenu"
-        ComponentRole.BUTTON -> "pushable button in dialogs/toolbars"
-        ComponentRole.TEXT_FIELD -> "single-line text input field"
-        ComponentRole.CHECKBOX -> "toggle checkbox"
-        ComponentRole.DROPDOWN -> "combo box / drop-down selector"
-        ComponentRole.LIST -> "scrollable list of selectable items"
-        ComponentRole.TABLE -> "data grid / table with rows and columns"
-        else -> role.name.lowercase().replace("_", " ")
-    }
+    private fun describeRole(role: ComponentRole): String =
+        when (role) {
+            ComponentRole.POPUP_WINDOW -> "floating overlay window for menus/popups"
+            ComponentRole.DIALOG -> "modal or modeless dialog container"
+            ComponentRole.MENU_ITEM -> "clickable leaf item in a menu"
+            ComponentRole.MENU_CONTAINER -> "menu header that opens a submenu"
+            ComponentRole.BUTTON -> "pushable button in dialogs/toolbars"
+            ComponentRole.TEXT_FIELD -> "single-line text input field"
+            ComponentRole.CHECKBOX -> "toggle checkbox"
+            ComponentRole.DROPDOWN -> "combo box / drop-down selector"
+            ComponentRole.LIST -> "scrollable list of selectable items"
+            ComponentRole.TABLE -> "data grid / table with rows and columns"
+            else -> role.name.lowercase().replace("_", " ")
+        }
 
     // ── LLM classification ──────────────────────────────────────────────────
 
@@ -348,15 +361,16 @@ Return JSON array only, no markdown fences:
     }
 
     private fun classifyBatch(batch: List<ClassContext>): Map<String, ComponentRole> {
-        val classesBlock = batch.mapIndexed { i, ctx ->
-            buildString {
-                append("${i + 1}. \"${ctx.className}\" (${ctx.count} instances)")
-                append("\n   Parents: [${ctx.parents.take(5).joinToString(", ")}]")
-                append("  Children: [${ctx.children.take(8).joinToString(", ")}]")
-                append("\n   has_text: ${ctx.hasText}")
-                append(", has_accessible_name: ${ctx.hasAccessibleName}")
-            }
-        }.joinToString("\n\n")
+        val classesBlock =
+            batch.mapIndexed { i, ctx ->
+                buildString {
+                    append("${i + 1}. \"${ctx.className}\" (${ctx.count} instances)")
+                    append("\n   Parents: [${ctx.parents.take(5).joinToString(", ")}]")
+                    append("  Children: [${ctx.children.take(8).joinToString(", ")}]")
+                    append("\n   has_text: ${ctx.hasText}")
+                    append(", has_accessible_name: ${ctx.hasAccessibleName}")
+                }
+            }.joinToString("\n\n")
 
         val prompt = CLASSIFICATION_PROMPT_TEMPLATE.replace("{{CLASSES}}", classesBlock)
 
@@ -372,25 +386,28 @@ Return JSON array only, no markdown fences:
     private fun parseClassifications(response: String): Map<String, ComponentRole> {
         val result = mutableMapOf<String, ComponentRole>()
 
-        val cleaned = response
-            .replace(Regex("```json\\s*"), "")
-            .replace(Regex("```\\s*"), "")
-            .trim()
+        val cleaned =
+            response
+                .replace(Regex("```json\\s*"), "")
+                .replace(Regex("```\\s*"), "")
+                .trim()
 
-        val entryPattern = Regex(
-            """\{\s*"class"\s*:\s*"([^"]+)"\s*,\s*"role"\s*:\s*"([^"]+)"\s*,\s*"is_layout"\s*:\s*(true|false)\s*\}"""
-        )
+        val entryPattern =
+            Regex(
+                """\{\s*"class"\s*:\s*"([^"]+)"\s*,\s*"role"\s*:\s*"([^"]+)"\s*,\s*"is_layout"\s*:\s*(true|false)\s*\}""",
+            )
 
         for (match in entryPattern.findAll(cleaned)) {
             val className = match.groupValues[1]
             val roleName = match.groupValues[2]
             val isLayout = match.groupValues[3].toBoolean()
 
-            val role = if (isLayout && roleName !in listOf("PANEL", "SCROLL_PANE")) {
-                ComponentRole.PANEL
-            } else {
-                ComponentRole.fromString(roleName)
-            }
+            val role =
+                if (isLayout && roleName !in listOf("PANEL", "SCROLL_PANE")) {
+                    ComponentRole.PANEL
+                } else {
+                    ComponentRole.fromString(roleName)
+                }
 
             result[className] = role
         }

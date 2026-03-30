@@ -1,12 +1,10 @@
 package agent
 
-import llm.LlmClient
-import agent.UiAgent
 import executor.UiExecutor
+import llm.LlmClient
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
-import parser.UiComponent
 import profile.ApplicationProfile
 import test.BaseTest
 
@@ -24,7 +22,6 @@ import test.BaseTest
  *   Terminal 2 -> ./gradlew test --tests "agent.UiAgentTest"
  */
 class UiAgentTest : BaseTest() {
-
     private lateinit var uiAgent: UiAgent
     private lateinit var llm: LlmClient
     private lateinit var profile: ApplicationProfile
@@ -35,17 +32,18 @@ class UiAgentTest : BaseTest() {
         llm = LlmClient()
         profile = ApplicationProfile.loadFromFile("build/reports/app-profile.json")
             ?: ApplicationProfile(appName = "IntelliJ IDEA")
-        
+
         // Create UiExecutor with the robot from BaseTest
         executor = UiExecutor(robot)
 
         // Create the UI agent with IDE integration
-        uiAgent = UiAgent(
-            llm = llm,
-            profile = profile,
-            executor = executor,
-            uiTreeProvider = { executor.fetchUiTree() }
-        )
+        uiAgent =
+            UiAgent(
+                llm = llm,
+                profile = profile,
+                executor = executor,
+                uiTreeProvider = { executor.fetchUiTree() },
+            )
     }
 
     @Test
@@ -57,9 +55,10 @@ class UiAgentTest : BaseTest() {
         uiAgent.clearRecipes()
 
         // Execute with the UI agent
-        val result = uiAgent.execute(
-            "in file UiExecutor.kt, rename method executeRecipe to doWork"
-        )
+        val result =
+            uiAgent.execute(
+                "in file UiExecutor.kt, rename method executeRecipe to doWork",
+            )
 
         println("\n  Result: ${result.message}")
         println("  Success: ${result.success}")
@@ -78,9 +77,10 @@ class UiAgentTest : BaseTest() {
         println("\n=== TEST: UI Agent Extract Function ===\n")
 
         // Execute with the UI agent
-        val result = uiAgent.execute(
-            "in file UiExecutor.kt, extract function from lines 149-153"
-        )
+        val result =
+            uiAgent.execute(
+                "in file UiExecutor.kt, extract function from lines 149-153",
+            )
 
         println("\n  Result: ${result.message}")
         println("  Success: ${result.success}")
@@ -96,9 +96,10 @@ class UiAgentTest : BaseTest() {
         println("\n=== TEST: UI Agent Change Signature ===\n")
 
         // Execute with the UI agent
-        val result = uiAgent.execute(
-            "in file UiExecutor.kt, change signature of method executeRecipe: (Return Type) Boolean to Void"
-        )
+        val result =
+            uiAgent.execute(
+                "in file UiExecutor.kt, change signature of method executeRecipe: (Return Type) Boolean to Void",
+            )
 
         println("\n  Result: ${result.message}")
         println("  Success: ${result.success}")
@@ -113,9 +114,10 @@ class UiAgentTest : BaseTest() {
         println("\n=== TEST: UI Agent Use Saved Recipe ===\n")
 
         // First, execute a rename to save a recipe
-        val firstResult = uiAgent.execute(
-            "in file UiExecutor.kt, rename method focusEditor to setFocus"
-        )
+        val firstResult =
+            uiAgent.execute(
+                "in file UiExecutor.kt, rename method focusEditor to setFocus",
+            )
 
         println("\n  First execution:")
         println("    Success: ${firstResult.success}")
@@ -123,9 +125,10 @@ class UiAgentTest : BaseTest() {
 
         if (firstResult.recipeSaved) {
             // Now execute a similar intent - should use the saved recipe as reference
-            val secondResult = uiAgent.execute(
-                "in file UiExecutor.kt, rename method doWork to processRecipe"
-            )
+            val secondResult =
+                uiAgent.execute(
+                    "in file UiExecutor.kt, rename method doWork to processRecipe",
+                )
 
             println("\n  Second execution (should use recipe reference):")
             println("    Success: ${secondResult.success}")

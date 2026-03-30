@@ -494,49 +494,69 @@ echo "=== Diagnostic Complete ==="
 
 ## THE FIX (Session 18954b1d)
 
-**Root Cause:** macOS keyboard input handling issue, NOT Remote Robot API incompatibility!
+**Root Cause:** Dependency conflict in `build.gradle.kts` — Remote Robot v0.11.23 pulls in an incompatible `kotlinx-serialization-converter` that conflicts with the project's serialization setup.
 
 ### The Problem:
-- On macOS, `robot.keyboard { key(...) }` sends keyboard events to the **focused window**
-- However, these events may not reach IntelliJ correctly due to focus issues
-- The "FindComponentsResponse serialization error" was a red herring
+```
+Error: Unable to create converter for class com.intellij.remoterobot.client.FindComponentsResponse
+   for method IdeRobotApi.findAllByXpath
+```
+
+Remote Robot's dependencies include `retrofit2-kotlinx-serialization-converter` which conflicts with the project's kotlinx.serialization configuration. This causes Retrofit to fail when deserializing API responses.
 
 ### The Solution:
-Use **AppleScript to send keystrokes directly to the IntelliJ process**, NOT through the focused window.
+**Exclude the conflicting serialization converters from Remote Robot dependencies.**
 
-**Implementation (from KeyboardActionTest.kt):**
+**In `intellij-plugin/build.gradle.kts`:**
 ```kotlin
-private fun sendKeystrokeToIntelliJ(
-    keyName: String,
-    modifiers: List<String> = emptyList()
-) {
-    val script = """
-        tell application "System Events"
-            tell process "IntelliJ IDEA"
-                keystroke "$keyName" using {${modifiers.joinToString(", ")}}"
-            end tell
-        end tell
-    """.trimIndent()
+dependencies {
+    // Remote Robot — for UI automation
+    implementation("com.intellij.remoterobot:remote-robot:0.11.23") {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-converter")
+        exclude(group = "com.jakewharton.retrofit", module = "retrofit2-kotlinx-serialization-converter")
+    }
+    implementation("com.intellij.remoterobot:remote-fixtures:0.11.23") {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-converter")
+        exclude(group = "com.jakewharton.retrofit", module = "retrofit2-kotlinx-serialization-converter")
+    }
 
-    val processBuilder = ProcessBuilder("osascript", "-e", script)
-    val result = processBuilder.start().waitFor()
+    // Keep your own kotlinx-serialization setup
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 }
 ```
 
-**Key Changes:**
-1. Don't use `robot.keyboard { ... }` on macOS
-2. Instead, use `ProcessBuilder("osascript", "-e", script)` to send keystrokes directly to IntelliJ
-3. Always bring IntelliJ to front first: `tell application "System Events" to set frontmost of the first process whose name is "idea" to true`
+**Key Points:**
+1. The `exclude()` blocks prevent Remote Robot from pulling in conflicting converters
+2. Your project's kotlinx-serialization-json remains for your own serialization needs
+3. Remote Robot uses its internal serialization (not the converter)
 
-### What Was Fixed:
-- `UiExecutor.kt` - Updated to use AppleScript for macOS keyboard input
-- `GraphAgent.kt` - May need similar updates for press_key actions
-- All test files updated with proper macOS keyboard handling
+### AppleScript Role (Separate from Fix):
+AppleScript is used **only for focus management** on macOS, not as the actual Remote Robot fix:
 
-### How to Apply the Fix:
-1. Check if `UiExecutor.pressKey()` and similar methods use AppleScript on macOS
-2. Update any keyboard action methods in GraphAgent to use AppleScript
-3. Test with simple test: `./gradlew test --tests KeyboardActionTest`
+```kotlin
+private fun bringIntelliJToFront() {
+    ProcessBuilder("osascript", "-e",
+        "tell application \"System Events\" to set frontmost of the first process whose name is \"idea\" to true"
+    ).start().waitFor()
+}
+```
+
+This ensures IntelliJ has focus before `robot.keyboard` sends keystrokes. It's a workaround for macOS focus handling quirks, not the Remote Robot API fix.
+
+### How to Verify the Fix:
+```bash
+# 1. Clean and rebuild
+cd intellij-plugin
+./gradlew clean build
+
+# 2. Run smoke tests
+./gradlew test --tests RemoteRobotSmokeTest
+
+# 3. Run integration tests
+./gradlew test --tests UiIntegrationTest
+```
+
+If tests pass without serialization errors, the fix is working.
 
 ## Expected Outcomes
 

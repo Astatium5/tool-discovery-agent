@@ -7,11 +7,11 @@ import profile.ComponentRole
 
 /**
  * Formats UiComponent trees directly into LLM prompt strings.
- * 
+ *
  * This eliminates the double transformation:
  * - Before: UiComponent → UIObserver.UIObservation → prompt string
  * - After: UiComponent → prompt string
- * 
+ *
  * The formatter preserves all relevant information:
  * - Component class (cls)
  * - Accessible name
@@ -20,7 +20,6 @@ import profile.ComponentRole
  * - Hierarchy depth (via indentation)
  */
 object UiTreeFormatter {
-
     /**
      * Format a UI tree for LLM consumption.
      * @param uiTree The raw UI component tree
@@ -33,32 +32,32 @@ object UiTreeFormatter {
         uiTree: List<UiComponent>,
         profile: ApplicationProfile,
         maxDepth: Int = 10,
-        maxElements: Int = 100
+        maxElements: Int = 100,
     ): String {
         val sb = StringBuilder()
         val elementCount = intArrayOf(0)
-        
+
         sb.append("## Current UI State\n\n")
-        
+
         // Detect window types
         val windowSummary = detectWindows(uiTree, profile)
         sb.append(windowSummary.summary).append("\n\n")
-        
+
         // Format components
         sb.append("### UI Components\n\n")
         sb.append("```\n")
-        
+
         for (component in uiTree) {
             if (elementCount[0] >= maxElements) break
             formatComponent(component, profile, 0, maxDepth, sb, elementCount, maxElements)
         }
-        
+
         if (elementCount[0] >= maxElements) {
             sb.append("... (truncated, ${elementCount[0]} elements)\n")
         }
-        
+
         sb.append("```\n")
-        
+
         return sb.toString()
     }
 
@@ -67,19 +66,20 @@ object UiTreeFormatter {
      */
     private fun detectWindows(
         uiTree: List<UiComponent>,
-        profile: ApplicationProfile
+        profile: ApplicationProfile,
     ): WindowSummary {
         val windows = mutableListOf<WindowInfo>()
         val allComponents = UiTreeParser.flatten(uiTree)
-        
+
         for (component in allComponents) {
             val cls = component.cls
-            
+
             when {
                 profile.isDialog(cls) -> {
-                    val title = component.accessibleName.ifBlank { 
-                        component.text.ifBlank { "Dialog" } 
-                    }
+                    val title =
+                        component.accessibleName.ifBlank {
+                            component.text.ifBlank { "Dialog" }
+                        }
                     if (windows.none { it.title == title && it.type == "dialog" }) {
                         windows.add(WindowInfo("dialog", title))
                     }
@@ -88,10 +88,11 @@ object UiTreeFormatter {
                     val title = component.accessibleName.ifBlank { "Popup" }
                     if (windows.none { it.title == title && it.type == "popup" }) {
                         // Check if it's an inline widget (popup with text input)
-                        val hasTextInput = component.children.any { child ->
-                            profile.isTextInput(child.cls) ||
-                            profile.roleOf(child.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
-                        }
+                        val hasTextInput =
+                            component.children.any { child ->
+                                profile.isTextInput(child.cls) ||
+                                    profile.roleOf(child.cls) in setOf(ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA)
+                            }
                         val type = if (hasTextInput) "inline_widget" else "popup"
                         windows.add(WindowInfo(type, title))
                     }
@@ -103,12 +104,12 @@ object UiTreeFormatter {
                 }
             }
         }
-        
+
         // Default to editor if nothing detected
         if (windows.isEmpty()) {
             windows.add(WindowInfo("editor", "Main Window"))
         }
-        
+
         return WindowSummary(windows)
     }
 
@@ -122,33 +123,33 @@ object UiTreeFormatter {
         maxDepth: Int,
         sb: StringBuilder,
         elementCount: IntArray,
-        maxElements: Int
+        maxElements: Int,
     ) {
         if (depth > maxDepth) return
         if (elementCount[0] >= maxElements) return
-        
+
         elementCount[0]++
         val indent = "  ".repeat(depth)
-        
+
         // Format this component
         val role = determineRole(component.cls, profile)
         val name = component.accessibleName.ifBlank { component.text }
         val disabled = if (!component.enabled) " [disabled]" else ""
-        
+
         // Build the line
         val clsShort = component.cls.substringAfterLast(".")
         sb.append(indent).append(clsShort)
-        
+
         if (name.isNotBlank()) {
             sb.append(" '").append(name).append("'")
         }
-        
+
         if (role != "unknown") {
             sb.append(" (").append(role).append(")")
         }
-        
+
         sb.append(disabled).append("\n")
-        
+
         // Format children
         for (child in component.children) {
             if (elementCount[0] >= maxElements) break
@@ -159,7 +160,10 @@ object UiTreeFormatter {
     /**
      * Determine the role of a component.
      */
-    private fun determineRole(cls: String, profile: ApplicationProfile): String {
+    private fun determineRole(
+        cls: String,
+        profile: ApplicationProfile,
+    ): String {
         return when {
             profile.isButton(cls) -> "button"
             profile.isTextInput(cls) -> "text_input"
@@ -179,20 +183,21 @@ object UiTreeFormatter {
      * Summary of detected windows.
      */
     private data class WindowSummary(
-        val windows: List<WindowInfo>
+        val windows: List<WindowInfo>,
     ) {
         val summary: String
-            get() = when {
-                windows.isEmpty() -> "No windows detected."
-                windows.size == 1 -> {
-                    val w = windows[0]
-                    "Single ${w.type.replace("_", " ")} visible: ${w.title}"
+            get() =
+                when {
+                    windows.isEmpty() -> "No windows detected."
+                    windows.size == 1 -> {
+                        val w = windows[0]
+                        "Single ${w.type.replace("_", " ")} visible: ${w.title}"
+                    }
+                    else -> {
+                        "${windows.size} windows: " +
+                            windows.joinToString(", ") { "${it.title} (${it.type})" }
+                    }
                 }
-                else -> {
-                    "${windows.size} windows: " + 
-                    windows.joinToString(", ") { "${it.title} (${it.type})" }
-                }
-            }
     }
 
     /**
@@ -200,6 +205,6 @@ object UiTreeFormatter {
      */
     private data class WindowInfo(
         val type: String,
-        val title: String
+        val title: String,
     )
 }

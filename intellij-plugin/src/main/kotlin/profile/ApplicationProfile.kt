@@ -1,9 +1,9 @@
 package profile
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
@@ -22,44 +22,61 @@ data class ApplicationProfile(
     val appName: String,
     val profileVersion: String = "1.0",
     val createdAt: Long = System.currentTimeMillis(),
-    val classRoles: MutableMap<String, ComponentRole> = mutableMapOf()
+    val classRoles: MutableMap<String, ComponentRole> = mutableMapOf(),
 ) {
     // ── Role queries ────────────────────────────────────────────────────────
 
-    fun roleOf(cls: String): ComponentRole =
-        classRoles[cls] ?: ComponentRole.UNKNOWN
+    fun roleOf(cls: String): ComponentRole = classRoles[cls] ?: ComponentRole.UNKNOWN
 
-    fun classesFor(vararg roles: ComponentRole): Set<String> =
-        classRoles.filterValues { it in roles }.keys
+    fun classesFor(vararg roles: ComponentRole): Set<String> = classRoles.filterValues { it in roles }.keys
 
     // ── Convenience sets (replace hardcoded constants) ───────────────────────
 
     fun popupClasses(): Set<String> = classesFor(ComponentRole.POPUP_WINDOW)
+
     fun dialogClasses(): Set<String> = classesFor(ComponentRole.DIALOG)
+
     fun menuItemClasses(): Set<String> = classesFor(ComponentRole.MENU_ITEM, ComponentRole.MENU_CONTAINER)
+
     fun buttonClasses(): Set<String> = classesFor(ComponentRole.BUTTON)
-    fun textInputClasses(): Set<String> = classesFor(
-        ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA, ComponentRole.EDITOR
-    )
-    fun dialogInteractiveClasses(): Set<String> = classesFor(
-        ComponentRole.MENU_ITEM, ComponentRole.MENU_CONTAINER,
-        ComponentRole.BUTTON, ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA,
-        ComponentRole.EDITOR, ComponentRole.CHECKBOX, ComponentRole.DROPDOWN,
-        ComponentRole.TABLE, ComponentRole.LIST
-    )
+
+    fun textInputClasses(): Set<String> =
+        classesFor(
+            ComponentRole.TEXT_FIELD,
+            ComponentRole.TEXT_AREA,
+            ComponentRole.EDITOR,
+        )
+
+    fun dialogInteractiveClasses(): Set<String> =
+        classesFor(
+            ComponentRole.MENU_ITEM, ComponentRole.MENU_CONTAINER,
+            ComponentRole.BUTTON, ComponentRole.TEXT_FIELD, ComponentRole.TEXT_AREA,
+            ComponentRole.EDITOR, ComponentRole.CHECKBOX, ComponentRole.DROPDOWN,
+            ComponentRole.TABLE, ComponentRole.LIST,
+        )
 
     // ── Predicate helpers (replace `cls in HARDCODED_SET` checks) ────────────
 
     fun isPopupWindow(cls: String) = roleOf(cls) == ComponentRole.POPUP_WINDOW
+
     fun isDialog(cls: String) = roleOf(cls) == ComponentRole.DIALOG
+
     fun isMenuItem(cls: String) = ComponentRole.isMenu(roleOf(cls))
+
     fun isButton(cls: String) = roleOf(cls) == ComponentRole.BUTTON
+
     fun isTextInput(cls: String) = ComponentRole.isTextInput(roleOf(cls))
+
     fun isEditor(cls: String) = roleOf(cls) == ComponentRole.EDITOR
+
     fun isList(cls: String) = roleOf(cls) == ComponentRole.LIST
+
     fun isTable(cls: String) = roleOf(cls) == ComponentRole.TABLE
+
     fun isTree(cls: String) = roleOf(cls) == ComponentRole.TREE
+
     fun isCheckbox(cls: String) = roleOf(cls) == ComponentRole.CHECKBOX
+
     fun isDropdown(cls: String) = roleOf(cls) == ComponentRole.DROPDOWN
 
     /** True for classes that are pure layout containers (collapse in tree). */
@@ -80,8 +97,7 @@ data class ApplicationProfile(
         classRoles.putAll(newMappings)
     }
 
-    fun unknownClasses(observed: Set<String>): Set<String> =
-        observed.filter { roleOf(it) == ComponentRole.UNKNOWN }.toSet()
+    fun unknownClasses(observed: Set<String>): Set<String> = observed.filter { roleOf(it) == ComponentRole.UNKNOWN }.toSet()
 
     // ── Persistence ─────────────────────────────────────────────────────────
 
@@ -93,11 +109,12 @@ data class ApplicationProfile(
     }
 
     companion object {
-        private val json = Json {
-            prettyPrint = true
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
+        private val json =
+            Json {
+                prettyPrint = true
+                ignoreUnknownKeys = true
+                encodeDefaults = true
+            }
 
         fun loadFromFile(path: String): ApplicationProfile? {
             val file = File(path)

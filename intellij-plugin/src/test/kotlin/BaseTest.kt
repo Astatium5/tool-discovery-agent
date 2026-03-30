@@ -19,7 +19,6 @@ import java.time.Duration
  *   Terminal 2 → ./gradlew test               (runs the tests)
  */
 abstract class BaseTest {
-
     // Connect to the IDE sandbox running on port 8082
     // (port is set via systemProperty in runIdeForUiTests task)
     protected val robot = RemoteRobot("http://localhost:8082")
@@ -31,12 +30,13 @@ abstract class BaseTest {
         try {
             robot.find<ComponentFixture>(
                 byXpath("//div[@class='IdeFrameImpl' or @class='FlatWelcomeFrame']"),
-                Duration.ofSeconds(5)
+                Duration.ofSeconds(5),
             )
             println("✅ Connected to IDE on port 8082")
         } catch (e: Exception) {
             throw IllegalStateException(
-                "❌ Could not connect to IDE. Did you run './gradlew runIdeForUiTests' first?", e
+                "❌ Could not connect to IDE. Did you run './gradlew runIdeForUiTests' first?",
+                e,
             )
         }
     }

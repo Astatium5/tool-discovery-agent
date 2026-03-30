@@ -33,28 +33,34 @@ enum class ComponentRole {
     SCROLL_PANE,
     STATUS_BAR,
     FRAME,
-    UNKNOWN;
+    UNKNOWN,
+    ;
 
     companion object {
         private val LAYOUT_ROLES = setOf(PANEL, SCROLL_PANE)
-        private val INTERACTIVE_ROLES = setOf(
-            MENU_ITEM, MENU_CONTAINER, BUTTON, TEXT_FIELD, TEXT_AREA,
-            EDITOR, CHECKBOX, DROPDOWN, LIST, TABLE, TREE
-        )
+        private val INTERACTIVE_ROLES =
+            setOf(
+                MENU_ITEM, MENU_CONTAINER, BUTTON, TEXT_FIELD, TEXT_AREA,
+                EDITOR, CHECKBOX, DROPDOWN, LIST, TABLE, TREE,
+            )
         private val TEXT_INPUT_ROLES = setOf(TEXT_FIELD, TEXT_AREA, EDITOR)
         private val MENU_ROLES = setOf(MENU_ITEM, MENU_CONTAINER)
-        private val DIALOG_INTERACTIVE_ROLES = setOf(
-            MENU_ITEM, MENU_CONTAINER, BUTTON, TEXT_FIELD, TEXT_AREA,
-            EDITOR, CHECKBOX, DROPDOWN, TABLE, LIST
-        )
+        private val DIALOG_INTERACTIVE_ROLES =
+            setOf(
+                MENU_ITEM, MENU_CONTAINER, BUTTON, TEXT_FIELD, TEXT_AREA,
+                EDITOR, CHECKBOX, DROPDOWN, TABLE, LIST,
+            )
 
         fun isLayout(role: ComponentRole) = role in LAYOUT_ROLES
+
         fun isInteractive(role: ComponentRole) = role in INTERACTIVE_ROLES
+
         fun isTextInput(role: ComponentRole) = role in TEXT_INPUT_ROLES
+
         fun isMenu(role: ComponentRole) = role in MENU_ROLES
+
         fun isDialogInteractive(role: ComponentRole) = role in DIALOG_INTERACTIVE_ROLES
 
-        fun fromString(s: String): ComponentRole =
-            entries.firstOrNull { it.name.equals(s, ignoreCase = true) } ?: UNKNOWN
+        fun fromString(s: String): ComponentRole = entries.firstOrNull { it.name.equals(s, ignoreCase = true) } ?: UNKNOWN
     }
 }

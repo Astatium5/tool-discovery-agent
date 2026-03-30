@@ -1,16 +1,16 @@
 package agent
 
+import action.ActionGenerator
+import executor.UiExecutor
+import formatter.UiTreeFormatter
 import llm.LlmClient
+import parser.UiComponent
+import parser.UiTreeParser
+import profile.ApplicationProfile
 import reasoner.LLMReasoner
 import reasoner.LLMReasoner.*
-import action.ActionGenerator
 import recipe.RecipeRegistry
 import recipe.VerifiedRecipe
-import formatter.UiTreeFormatter
-import executor.UiExecutor
-import parser.UiTreeParser
-import parser.UiComponent
-import profile.ApplicationProfile
 
 /**
  * UI Agent - The main orchestrator for LLM-centric UI automation.
@@ -31,7 +31,7 @@ class UiAgent(
     private val llm: LlmClient,
     private val profile: ApplicationProfile,
     private val executor: UiExecutor,
-    private val uiTreeProvider: () -> List<UiComponent>
+    private val uiTreeProvider: () -> List<UiComponent>,
 ) {
     private val reasoner = LLMReasoner(llm)
     private val actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm)
@@ -45,7 +45,7 @@ class UiAgent(
         val message: String,
         val actionsTaken: Int = 0,
         val recipeSaved: Boolean = false,
-        val recipeId: String? = null
+        val recipeId: String? = null,
     )
 
     /**
@@ -59,8 +59,8 @@ class UiAgent(
         val lastDecision: Decision? = null,
         val failed: Boolean = false,
         val complete: Boolean = false,
-        val matchedRecipe: MatchedRecipe? = null,  // Recipe with step tracking
-        val initialDocumentText: String? = null    // For diff-based completion detection
+        val matchedRecipe: MatchedRecipe? = null, // Recipe with step tracking
+        val initialDocumentText: String? = null, // For diff-based completion detection
     )
 
     companion object {
@@ -93,11 +93,12 @@ class UiAgent(
 
         // Capture initial document text for diff-based completion detection
         val initialDocumentText = executor.getDocumentText()
-        var state = ExecutionState(
-            intent = intent,
-            matchedRecipe = matchedRecipe,
-            initialDocumentText = initialDocumentText
-        )
+        var state =
+            ExecutionState(
+                intent = intent,
+                matchedRecipe = matchedRecipe,
+                initialDocumentText = initialDocumentText,
+            )
 
         // Main execution loop
         while (state.iteration < MAX_ITERATIONS && !state.failed && !state.complete) {
@@ -121,13 +122,14 @@ class UiAgent(
             }
 
             // 2. REASON: LLM decides next action (using raw tree directly)
-            val context = DecisionContext(
-                intent = intent,
-                uiTree = uiTree,
-                profile = profile,
-                actionHistory = state.actionHistory.toList(),
-                matchedRecipe = state.matchedRecipe
-            )
+            val context =
+                DecisionContext(
+                    intent = intent,
+                    uiTree = uiTree,
+                    profile = profile,
+                    actionHistory = state.actionHistory.toList(),
+                    matchedRecipe = state.matchedRecipe,
+                )
 
             val decision = reasoner.decide(context)
             println("  LLM Reasoning: ${decision.reasoning.take(200)}...")
@@ -151,11 +153,13 @@ class UiAgent(
             println("  Action Result: ${actionResult.message}")
 
             // Record in history
-            state.actionHistory.add(HistoryEntry(
-                action = decision.action,
-                result = actionResult.message,
-                success = actionResult.success
-            ))
+            state.actionHistory.add(
+                HistoryEntry(
+                    action = decision.action,
+                    result = actionResult.message,
+                    success = actionResult.success,
+                ),
+            )
 
             // Advance recipe step if action was successful and we have a matched recipe
             if (actionResult.success && state.matchedRecipe != null) {
@@ -196,7 +200,7 @@ class UiAgent(
         return MatchedRecipe(
             recipe = bestRecipe,
             currentStep = 0,
-            params = emptyMap()
+            params = emptyMap(),
         )
     }
 
@@ -210,21 +214,21 @@ class UiAgent(
      */
     private fun checkDiffBasedCompletion(state: ExecutionState): Boolean {
         val initialText = state.initialDocumentText ?: return false
-        
+
         // Get current document text
         val currentText = executor.getDocumentText() ?: return false
-        
+
         // Check if document changed
         if (currentText == initialText) {
             return false
         }
-        
+
         // Check if any popups/dialogs are open
         val uiTree = uiTreeProvider.invoke()
         val allComponents = UiTreeParser.flatten(uiTree)
         val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
         val hasDialog = allComponents.any { profile.isDialog(it.cls) }
-        
+
         // Complete if document changed and no popups/dialogs
         return !hasPopup && !hasDialog
     }
@@ -254,7 +258,10 @@ class UiAgent(
     /**
      * Build the final result.
      */
-    private fun buildResult(state: ExecutionState, intent: String): ExecutionResult {
+    private fun buildResult(
+        state: ExecutionState,
+        intent: String,
+    ): ExecutionResult {
         val success = state.complete && !state.failed
 
         var recipeSaved = false
@@ -269,12 +276,13 @@ class UiAgent(
             println("\n  ✓ Saved verified recipe: ${recipe.id}")
         }
 
-        val message = when {
-            state.iteration >= MAX_ITERATIONS -> "Max iterations reached"
-            state.failed -> "Task failed: ${state.lastDecision?.reasoning ?: "Unknown reason"}"
-            state.complete -> "Task completed successfully"
-            else -> "Unknown state"
-        }
+        val message =
+            when {
+                state.iteration >= MAX_ITERATIONS -> "Max iterations reached"
+                state.failed -> "Task failed: ${state.lastDecision?.reasoning ?: "Unknown reason"}"
+                state.complete -> "Task completed successfully"
+                else -> "Unknown state"
+            }
 
         println("\n=== RESULT ===")
         println("Success: $success")
@@ -287,26 +295,31 @@ class UiAgent(
             message = message,
             actionsTaken = state.actionHistory.size,
             recipeSaved = recipeSaved,
-            recipeId = recipeId
+            recipeId = recipeId,
         )
     }
 
     /**
      * Create a verified recipe from a successful execution.
      */
-    private fun createRecipe(intent: String, state: ExecutionState): VerifiedRecipe {
+    private fun createRecipe(
+        intent: String,
+        state: ExecutionState,
+    ): VerifiedRecipe {
         // Determine context from execution
-        val context = VerifiedRecipe.RecipeContext(
-            precondition = null,  // Could be inferred from first action
-            responseType = inferResponseType(state),
-            application = "IntelliJ IDEA"
-        )
+        val context =
+            VerifiedRecipe.RecipeContext(
+                precondition = null, // Could be inferred from first action
+                responseType = inferResponseType(state),
+                application = "IntelliJ IDEA",
+            )
 
         // Build successful actions with UI state context
-        val actions = state.actionHistory.mapIndexed { index, entry ->
-            val uiState = state.uiStateHistory.getOrNull(index) ?: "Unknown UI state"
-            Pair(uiState, entry)
-        }
+        val actions =
+            state.actionHistory.mapIndexed { index, entry ->
+                val uiState = state.uiStateHistory.getOrNull(index) ?: "Unknown UI state"
+                Pair(uiState, entry)
+            }
 
         return recipeRegistry.createRecipe(intent, context, actions)
     }
@@ -316,16 +329,20 @@ class UiAgent(
      */
     private fun inferResponseType(state: ExecutionState): String? {
         // Look for indicators in the action history
-        val hasDialog = state.actionHistory.any { entry ->
-            entry.action is Action.Click && 
-            (entry.result.contains("dialog", ignoreCase = true) ||
-             entry.result.contains("popup", ignoreCase = true))
-        }
+        val hasDialog =
+            state.actionHistory.any { entry ->
+                entry.action is Action.Click &&
+                    (
+                        entry.result.contains("dialog", ignoreCase = true) ||
+                            entry.result.contains("popup", ignoreCase = true)
+                    )
+            }
 
-        val hasInlineWidget = state.actionHistory.any { entry ->
-            entry.result.contains("inline", ignoreCase = true) ||
-            entry.result.contains("widget", ignoreCase = true)
-        }
+        val hasInlineWidget =
+            state.actionHistory.any { entry ->
+                entry.result.contains("inline", ignoreCase = true) ||
+                    entry.result.contains("widget", ignoreCase = true)
+            }
 
         return when {
             hasInlineWidget -> "INLINE_WIDGET"

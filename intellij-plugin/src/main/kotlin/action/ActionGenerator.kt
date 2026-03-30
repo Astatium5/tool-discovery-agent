@@ -1,12 +1,12 @@
 package action
 
-import llm.LlmClient
-import reasoner.LLMReasoner.Action
 import executor.UiExecutor
+import llm.LlmClient
 import parser.ScopedSnapshotBuilder
 import parser.UiComponent
 import parser.UiTreeParser
 import profile.ApplicationProfile
+import reasoner.LLMReasoner.Action
 
 /**
  * Action Generator - Executes actions decided by the LLM Reasoner.
@@ -24,9 +24,8 @@ class ActionGenerator(
     private val executor: UiExecutor,
     private val profile: ApplicationProfile,
     private val uiTreeProvider: () -> List<UiComponent>,
-    private val llm: LlmClient? = null
+    private val llm: LlmClient? = null,
 ) {
-
     companion object {
         /**
          * Prompt for LLM to analyze UI state after clicking a menu item.
@@ -86,13 +85,13 @@ Return JSON:
         val toolResponseType: String,
         val confirmAction: String,
         val dialogFields: List<String>,
-        val description: String
+        val description: String,
     ) {
         enum class StateType {
-            SUBMENU,        // Menu item opened a submenu
+            SUBMENU, // Menu item opened a submenu
             TOOL_TRIGGERED, // Actual tool was triggered (dialog/widget appeared)
-            DISMISSED,      // Menu closed without action
-            UNKNOWN         // Could not determine
+            DISMISSED, // Menu closed without action
+            UNKNOWN, // Could not determine
         }
 
         val isSubmenu: Boolean get() = stateType == StateType.SUBMENU
@@ -106,7 +105,7 @@ Return JSON:
     data class ActionResult(
         val success: Boolean,
         val message: String,
-        val data: Map<String, Any> = emptyMap()
+        val data: Map<String, Any> = emptyMap(),
     )
 
     /**
@@ -116,7 +115,10 @@ Return JSON:
      * @param currentUiTree The current UI tree (raw, no intermediate transformation)
      * @return The result of the action
      */
-    fun execute(action: Action, currentUiTree: List<UiComponent>): ActionResult {
+    fun execute(
+        action: Action,
+        currentUiTree: List<UiComponent>,
+    ): ActionResult {
         println("  ActionGenerator: Executing ${action::class.simpleName}")
 
         return when (action) {
@@ -145,7 +147,7 @@ Return JSON:
     private fun executeOpenFile(action: Action.OpenFile): ActionResult {
         return try {
             executor.openFile(action.path)
-            Thread.sleep(1000)  // Wait for file to open
+            Thread.sleep(1000) // Wait for file to open
             ActionResult(true, "Opened file '${action.path}'")
         } catch (e: Exception) {
             ActionResult(false, "Failed to open file: ${e.message}")
@@ -189,7 +191,10 @@ Return JSON:
      *
      * For dialog buttons, we click and return success.
      */
-    private fun executeClick(action: Action.Click, uiTree: List<UiComponent>): ActionResult {
+    private fun executeClick(
+        action: Action.Click,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
         val target = action.target
 
         return try {
@@ -198,40 +203,42 @@ Return JSON:
                 // Get pre-click popup count for comparison
                 val preClickUiTree = uiTreeProvider()
                 val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
-                
+
                 executor.clickMenuItem(target)
                 // Wait for menu action to take effect
                 Thread.sleep(800)
-                
+
                 // ALWAYS wait for UI changes and classify - no keyword-based shortcuts
                 val waitResult = waitForUIElement(timeoutMs = 2000)
-                
+
                 // Get fresh UI tree for LLM analysis
                 val postClickUiTree = uiTreeProvider()
-                
+
                 // ALWAYS use LLM-based state analysis to classify what happened
-                val analysis = analyzeToolResponse(
-                    toolName = target,
-                    uiTree = postClickUiTree,
-                    goal = "",  // Goal would be passed from context
-                    preClickPopupCount = preClickPopupCount
-                )
-                
+                val analysis =
+                    analyzeToolResponse(
+                        toolName = target,
+                        uiTree = postClickUiTree,
+                        goal = "", // Goal would be passed from context
+                        preClickPopupCount = preClickPopupCount,
+                    )
+
                 println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
-                
+
                 // Return result with analysis data
                 ActionResult(
                     success = true,
                     message = "Clicked menu item '$target' - ${analysis.description}",
-                    data = mapOf(
-                        "analysis" to analysis,
-                        "stateType" to analysis.stateType.name,
-                        "isSubmenu" to analysis.isSubmenu,
-                        "isToolTriggered" to analysis.isToolTriggered,
-                        "availableItems" to analysis.availableItems,
-                        "confirmAction" to analysis.confirmAction,
-                        "dialogFields" to analysis.dialogFields
-                    )
+                    data =
+                        mapOf(
+                            "analysis" to analysis,
+                            "stateType" to analysis.stateType.name,
+                            "isSubmenu" to analysis.isSubmenu,
+                            "isToolTriggered" to analysis.isToolTriggered,
+                            "availableItems" to analysis.availableItems,
+                            "confirmAction" to analysis.confirmAction,
+                            "dialogFields" to analysis.dialogFields,
+                        ),
                 )
             } catch (e: Exception) {
                 // Try as dialog button
@@ -255,42 +262,44 @@ Return JSON:
      */
     private fun waitForUIElement(timeoutMs: Long = 3000): Boolean {
         val startTime = System.currentTimeMillis()
-        
+
         println("    Auto-waiting for UI element...")
-        
+
         var attempt = 0
         while (System.currentTimeMillis() - startTime < timeoutMs) {
             attempt++
             val freshUiTree = uiTreeProvider()
-            
+
             // Use flattened search to find dialogs/popups at any depth
             val allComponents = UiTreeParser.flatten(freshUiTree)
-            
+
             // Check for dialogs using profile
             val hasDialog = allComponents.any { profile.isDialog(it.cls) }
             val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
             val hasTextInput = allComponents.any { profile.isTextInput(it.cls) && it.enabled }
-            
+
             // Check for inline widget (popup with text input)
-            val hasInlineWidget = allComponents.any { component ->
-                profile.isPopupWindow(component.cls) &&
-                component.children.any { profile.isTextInput(it.cls) }
-            }
-            
-            if (hasDialog || hasPopup || hasTextInput || hasInlineWidget) {
-                val detectedType = when {
-                    hasDialog -> "dialog"
-                    hasInlineWidget -> "inline widget"
-                    hasPopup -> "popup"
-                    else -> "text input"
+            val hasInlineWidget =
+                allComponents.any { component ->
+                    profile.isPopupWindow(component.cls) &&
+                        component.children.any { profile.isTextInput(it.cls) }
                 }
+
+            if (hasDialog || hasPopup || hasTextInput || hasInlineWidget) {
+                val detectedType =
+                    when {
+                        hasDialog -> "dialog"
+                        hasInlineWidget -> "inline widget"
+                        hasPopup -> "popup"
+                        else -> "text input"
+                    }
                 println("    ✓ UI element detected: $detectedType (attempt $attempt)")
                 return true
             }
-            
+
             Thread.sleep(300)
         }
-        
+
         println("    No dialog/widget detected after ${timeoutMs}ms ($attempt attempts)")
         return false
     }
@@ -299,7 +308,10 @@ Return JSON:
      * Execute a type action.
      * If target is specified, uses focusField to focus the field before typing.
      */
-    private fun executeType(action: Action.Type, uiTree: List<UiComponent>): ActionResult {
+    private fun executeType(
+        action: Action.Type,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
         return try {
             // If target is specified, focus the field first
             if (action.target != null) {
@@ -312,7 +324,7 @@ Return JSON:
                     // Continue anyway - the field might already be focused
                 }
             }
-            
+
             if (action.clearFirst) {
                 // Select all first (Ctrl+A)
                 executor.pressShortcut("ctrl A")
@@ -334,17 +346,17 @@ Return JSON:
     private fun executePressKey(action: Action.PressKey): ActionResult {
         return try {
             val key = action.key.lowercase()
-            
+
             when {
                 // Special case: open context menu
                 key == "context_menu" -> {
                     executor.openContextMenu()
-                    Thread.sleep(500)  // Wait for menu to appear
+                    Thread.sleep(500) // Wait for menu to appear
                     ActionResult(true, "Opened context menu")
                 }
                 // Shortcut (contains +)
                 key.contains("+") -> {
-                    executor.pressShortcut(action.key)  // Preserve original case
+                    executor.pressShortcut(action.key) // Preserve original case
                     Thread.sleep(300)
                     ActionResult(true, "Pressed shortcut '${action.key}'")
                 }
@@ -363,7 +375,10 @@ Return JSON:
     /**
      * Execute a select dropdown action.
      */
-    private fun executeSelectDropdown(action: Action.SelectDropdown, uiTree: List<UiComponent>): ActionResult {
+    private fun executeSelectDropdown(
+        action: Action.SelectDropdown,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
         return try {
             executor.selectDropdownField(action.target, action.value)
             Thread.sleep(300)
@@ -377,49 +392,58 @@ Return JSON:
      * Execute a wait action.
      * Re-observes the UI to check if the element appeared.
      */
-    private fun executeWait(action: Action.Wait, uiTree: List<UiComponent>): ActionResult {
+    private fun executeWait(
+        action: Action.Wait,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
         val startTime = System.currentTimeMillis()
         val elementType = action.elementType.lowercase()
-        
+
         println("    Waiting for element '$elementType' (timeout: ${action.timeoutMs}ms)")
-        
+
         // Poll for the element to appear
         while (System.currentTimeMillis() - startTime < action.timeoutMs) {
             // Get fresh UI tree
             val freshUiTree = uiTreeProvider()
             val allComponents = UiTreeParser.flatten(freshUiTree)
-            
+
             // Check for dialogs
             val foundDialog = allComponents.any { profile.isDialog(it.cls) }
-            
+
             // Check for popups
             val foundPopup = allComponents.any { profile.isPopupWindow(it.cls) }
-            
+
             // Check for inline widgets (popup with text input)
-            val foundInline = allComponents.any { component ->
-                profile.isPopupWindow(component.cls) &&
-                component.children.any { profile.isTextInput(it.cls) }
-            }
-            
+            val foundInline =
+                allComponents.any { component ->
+                    profile.isPopupWindow(component.cls) &&
+                        component.children.any { profile.isTextInput(it.cls) }
+                }
+
             // Check for text inputs
-            val foundTextField = if (elementType.contains("text") || elementType.contains("input") || elementType.contains("field")) {
-                allComponents.any { profile.isTextInput(it.cls) }
-            } else false
-            
+            val foundTextField =
+                if (elementType.contains("text") || elementType.contains("input") || elementType.contains("field")) {
+                    allComponents.any { profile.isTextInput(it.cls) }
+                } else {
+                    false
+                }
+
             // Check for specific element types by name/label
-            val foundByLabel = allComponents.any { component ->
-                val label = component.accessibleName.ifBlank { component.text }
-                label.lowercase().contains(elementType)
-            }
+            val foundByLabel =
+                allComponents.any { component ->
+                    val label = component.accessibleName.ifBlank { component.text }
+                    label.lowercase().contains(elementType)
+                }
 
             if (foundDialog || foundPopup || foundInline || foundTextField || foundByLabel) {
-                val foundType = when {
-                    foundDialog -> "dialog"
-                    foundInline -> "inline widget"
-                    foundPopup -> "popup"
-                    foundTextField -> "text field"
-                    else -> elementType
-                }
+                val foundType =
+                    when {
+                        foundDialog -> "dialog"
+                        foundInline -> "inline widget"
+                        foundPopup -> "popup"
+                        foundTextField -> "text field"
+                        else -> elementType
+                    }
                 println("    ✓ Found element '$foundType'")
                 return ActionResult(true, "Element '$elementType' appeared")
             }
@@ -436,22 +460,28 @@ Return JSON:
      * This is a placeholder - the actual implementation would use the recipe
      * as context for the LLM to make decisions.
      */
-    private fun executeRecipe(action: Action.UseRecipe, uiTree: List<UiComponent>): ActionResult {
+    private fun executeRecipe(
+        action: Action.UseRecipe,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
         // Recipes should not be executed blindly.
         // Instead, they should be used as context for the LLM.
         return ActionResult(
             success = false,
-            message = "Recipe execution should be handled by the Brain Agent, not ActionGenerator"
+            message = "Recipe execution should be handled by the Brain Agent, not ActionGenerator",
         )
     }
 
     /**
      * Find an element by its label in the current observation.
      */
-    private fun findElementByLabel(label: String, uiTree: List<UiComponent>): UiComponent? {
+    private fun findElementByLabel(
+        label: String,
+        uiTree: List<UiComponent>,
+    ): UiComponent? {
         // Flatten and search all components
         val allComponents = UiTreeParser.flatten(uiTree)
-        
+
         // Try exact match first
         for (component in allComponents) {
             val componentLabel = component.accessibleName.ifBlank { component.text }
@@ -492,20 +522,22 @@ Return JSON:
         toolName: String,
         uiTree: List<UiComponent>?,
         goal: String = "",
-        preClickPopupCount: Int = 0
+        preClickPopupCount: Int = 0,
     ): ToolResponseAnalysis {
         val allComponents = if (uiTree != null) UiTreeParser.flatten(uiTree) else emptyList()
-        
+
         // Programmatic detection first
         val hasDialog = allComponents.any { profile.isDialog(it.cls) }
-        val hasInline = allComponents.any {
-            profile.isEditor(it.cls) && allComponents.any { profile.isPopupWindow(it.cls) }
-        }
-        val hasPopupList = allComponents.any {
-            profile.isList(it.cls) || profile.isTable(it.cls) || profile.isTree(it.cls)
-        }
+        val hasInline =
+            allComponents.any {
+                profile.isEditor(it.cls) && allComponents.any { profile.isPopupWindow(it.cls) }
+            }
+        val hasPopupList =
+            allComponents.any {
+                profile.isList(it.cls) || profile.isTable(it.cls) || profile.isTree(it.cls)
+            }
         val popupCount = ScopedSnapshotBuilder.popupCount(uiTree ?: emptyList())
-        
+
         // Get menu items for context
         val allMenuItems = ScopedSnapshotBuilder.forAllPopupsStructured(uiTree ?: emptyList())
         val menuItemLabels = allMenuItems.map { it.label }.take(20)
@@ -515,32 +547,35 @@ Return JSON:
         val newPopupsAppeared = popupCount > preClickPopupCount
         val hasMenuItems = allMenuItems.isNotEmpty()
         val inlineIsProbablyPreExisting = hasInline && newPopupsAppeared && hasMenuItems
-        
+
         // Debug logging
-        println("    UI State: $popupCount popups (was $preClickPopupCount), hasDialog=$hasDialog, hasInline=$hasInline" +
-                " (pre-existing=$inlineIsProbablyPreExisting), hasPopup=$hasPopupList, menuItems=${allMenuItems.size}")
-        
+        println(
+            "    UI State: $popupCount popups (was $preClickPopupCount), hasDialog=$hasDialog, hasInline=$hasInline" +
+                " (pre-existing=$inlineIsProbablyPreExisting), hasPopup=$hasPopupList, menuItems=${allMenuItems.size}",
+        )
+
         // If no LLM available, use fallback analysis
         if (llm == null) {
             println("    No LLM available, using fallback analysis")
             return fallbackAnalysis(hasDialog, hasInline, hasPopupList, menuItemLabels)
         }
-        
+
         // LLM-First approach: Ask LLM to classify the UI state
         val uiSnapshot = formatUiTreeForAnalysis(uiTree)
-        
-        val prompt = UI_STATE_ANALYSIS_PROMPT
-            .replace("{{TOOL_NAME}}", toolName)
-            .replace("{{GOAL}}", goal)
-            .replace("{{POPUP_COUNT}}", popupCount.toString())
-            .replace("{{HAS_DIALOG}}", hasDialog.toString())
-            .replace("{{HAS_INLINE}}", hasInline.toString())
-            .replace("{{HAS_POPUP}}", hasPopupList.toString())
-            .replace("{{UI_SNAPSHOT}}", uiSnapshot)
-        
+
+        val prompt =
+            UI_STATE_ANALYSIS_PROMPT
+                .replace("{{TOOL_NAME}}", toolName)
+                .replace("{{GOAL}}", goal)
+                .replace("{{POPUP_COUNT}}", popupCount.toString())
+                .replace("{{HAS_DIALOG}}", hasDialog.toString())
+                .replace("{{HAS_INLINE}}", hasInline.toString())
+                .replace("{{HAS_POPUP}}", hasPopupList.toString())
+                .replace("{{UI_SNAPSHOT}}", uiSnapshot)
+
         return try {
             val response = llm.chatStructured("You are a UI state analysis agent for IDE automation.", prompt)
-            
+
             // Parse LLM response
             val stateType = extractJsonString(response, "state_type") ?: "unknown"
             val reasoning = extractJsonString(response, "reasoning") ?: ""
@@ -549,9 +584,9 @@ Return JSON:
             val confirmAction = extractJsonString(response, "confirm_action") ?: ""
             val dialogFields = extractJsonArray(response, "dialog_fields")
             val description = extractJsonString(response, "description") ?: ""
-            
+
             println("    LLM Analysis: stateType=$stateType, reasoning=${reasoning.take(80)}...")
-            
+
             when (stateType) {
                 "submenu" -> {
                     println("    → LLM classified as SUBMENU with ${availableItems.size} items")
@@ -562,7 +597,7 @@ Return JSON:
                         toolResponseType = toolResponseType,
                         confirmAction = "",
                         dialogFields = emptyList(),
-                        description = description
+                        description = description,
                     )
                 }
                 "tool_triggered" -> {
@@ -578,7 +613,7 @@ Return JSON:
                             toolResponseType = toolResponseType,
                             confirmAction = "",
                             dialogFields = emptyList(),
-                            description = description
+                            description = description,
                         )
                     } else {
                         println("    → LLM classified as TOOL_TRIGGERED (type: $toolResponseType)")
@@ -589,7 +624,7 @@ Return JSON:
                             toolResponseType = toolResponseType,
                             confirmAction = confirmAction,
                             dialogFields = dialogFields,
-                            description = description
+                            description = description,
                         )
                     }
                 }
@@ -602,7 +637,7 @@ Return JSON:
                         toolResponseType = "none",
                         confirmAction = "",
                         dialogFields = emptyList(),
-                        description = "Menu dismissed: $description"
+                        description = "Menu dismissed: $description",
                     )
                 }
                 else -> {
@@ -623,54 +658,59 @@ Return JSON:
         hasDialog: Boolean,
         hasInline: Boolean,
         hasPopup: Boolean,
-        menuItems: List<String>
+        menuItems: List<String>,
     ): ToolResponseAnalysis {
         return when {
-            hasDialog -> ToolResponseAnalysis(
-                stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
-                reasoning = "Dialog detected (fallback)",
-                availableItems = emptyList(),
-                toolResponseType = "dialog",
-                confirmAction = "OK",
-                dialogFields = listOf("name"),
-                description = "Dialog opened (fallback detection)"
-            )
-            hasInline -> ToolResponseAnalysis(
-                stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
-                reasoning = "Inline editor detected (fallback)",
-                availableItems = emptyList(),
-                toolResponseType = "inline",
-                confirmAction = "Enter",
-                dialogFields = emptyList(),
-                description = "Inline editor appeared (fallback detection)"
-            )
-            hasPopup -> ToolResponseAnalysis(
-                stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
-                reasoning = "Popup chooser detected (fallback)",
-                availableItems = emptyList(),
-                toolResponseType = "popup_chooser",
-                confirmAction = "",
-                dialogFields = emptyList(),
-                description = "Popup chooser appeared (fallback detection)"
-            )
-            menuItems.isNotEmpty() -> ToolResponseAnalysis(
-                stateType = ToolResponseAnalysis.StateType.SUBMENU,
-                reasoning = "Menu items visible (fallback)",
-                availableItems = menuItems,
-                toolResponseType = "none",
-                confirmAction = "",
-                dialogFields = emptyList(),
-                description = "Submenu with ${menuItems.size} items (fallback detection)"
-            )
-            else -> ToolResponseAnalysis(
-                stateType = ToolResponseAnalysis.StateType.UNKNOWN,
-                reasoning = "No recognizable UI elements (fallback)",
-                availableItems = emptyList(),
-                toolResponseType = "none",
-                confirmAction = "",
-                dialogFields = emptyList(),
-                description = "Unknown state (fallback detection)"
-            )
+            hasDialog ->
+                ToolResponseAnalysis(
+                    stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
+                    reasoning = "Dialog detected (fallback)",
+                    availableItems = emptyList(),
+                    toolResponseType = "dialog",
+                    confirmAction = "OK",
+                    dialogFields = listOf("name"),
+                    description = "Dialog opened (fallback detection)",
+                )
+            hasInline ->
+                ToolResponseAnalysis(
+                    stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
+                    reasoning = "Inline editor detected (fallback)",
+                    availableItems = emptyList(),
+                    toolResponseType = "inline",
+                    confirmAction = "Enter",
+                    dialogFields = emptyList(),
+                    description = "Inline editor appeared (fallback detection)",
+                )
+            hasPopup ->
+                ToolResponseAnalysis(
+                    stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
+                    reasoning = "Popup chooser detected (fallback)",
+                    availableItems = emptyList(),
+                    toolResponseType = "popup_chooser",
+                    confirmAction = "",
+                    dialogFields = emptyList(),
+                    description = "Popup chooser appeared (fallback detection)",
+                )
+            menuItems.isNotEmpty() ->
+                ToolResponseAnalysis(
+                    stateType = ToolResponseAnalysis.StateType.SUBMENU,
+                    reasoning = "Menu items visible (fallback)",
+                    availableItems = menuItems,
+                    toolResponseType = "none",
+                    confirmAction = "",
+                    dialogFields = emptyList(),
+                    description = "Submenu with ${menuItems.size} items (fallback detection)",
+                )
+            else ->
+                ToolResponseAnalysis(
+                    stateType = ToolResponseAnalysis.StateType.UNKNOWN,
+                    reasoning = "No recognizable UI elements (fallback)",
+                    availableItems = emptyList(),
+                    toolResponseType = "none",
+                    confirmAction = "",
+                    dialogFields = emptyList(),
+                    description = "Unknown state (fallback detection)",
+                )
         }
     }
 
@@ -679,24 +719,27 @@ Return JSON:
      */
     private fun formatUiTreeForAnalysis(uiTree: List<UiComponent>?): String {
         if (uiTree == null || uiTree.isEmpty()) return "(empty)"
-        
+
         val sb = StringBuilder()
-        val allComponents = UiTreeParser.flatten(uiTree).take(50)  // Limit for token efficiency
-        
+        val allComponents = UiTreeParser.flatten(uiTree).take(50) // Limit for token efficiency
+
         for (component in allComponents) {
             val label = component.label.ifBlank { component.accessibleName.ifBlank { component.text } }
             if (label.isNotBlank()) {
                 sb.append("- ${component.cls.take(30)}: '$label'\n")
             }
         }
-        
+
         return sb.toString().ifBlank { "(no visible labels)" }
     }
 
     /**
      * Extract a string value from JSON response.
      */
-    private fun extractJsonString(json: String, key: String): String? {
+    private fun extractJsonString(
+        json: String,
+        key: String,
+    ): String? {
         // Try nested key first (e.g., "next_action.type")
         if (key.contains(".")) {
             val parts = key.split(".")
@@ -714,7 +757,7 @@ Return JSON:
             val pattern = Regex(""""$lastKey"\s*:\s*"([^"]*)"""")
             return pattern.find(current)?.groupValues?.get(1)
         }
-        
+
         // Simple key
         val pattern = Regex(""""$key"\s*:\s*"([^"]*)"""")
         return pattern.find(json)?.groupValues?.get(1)
@@ -723,10 +766,13 @@ Return JSON:
     /**
      * Extract an array from JSON response.
      */
-    private fun extractJsonArray(json: String, key: String): List<String> {
+    private fun extractJsonArray(
+        json: String,
+        key: String,
+    ): List<String> {
         val pattern = Regex(""""$key"\s*:\s*\[([^\]]*)\]""")
         val match = pattern.find(json) ?: return emptyList()
-        
+
         val arrayContent = match.groupValues[1]
         val itemPattern = Regex(""""([^"]*)"""")
         return itemPattern.findAll(arrayContent).map { it.groupValues[1] }.toList()

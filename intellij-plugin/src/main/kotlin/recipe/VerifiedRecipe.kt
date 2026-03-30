@@ -1,11 +1,11 @@
 package recipe
 
-import reasoner.LLMReasoner.Action
-import reasoner.LLMReasoner.HistoryEntry
-import reasoner.LLMReasoner.RecipeSummary
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import reasoner.LLMReasoner.Action
+import reasoner.LLMReasoner.HistoryEntry
+import reasoner.LLMReasoner.RecipeSummary
 import java.io.File
 import java.time.Instant
 
@@ -22,22 +22,22 @@ import java.time.Instant
 data class VerifiedRecipe(
     val id: String,
     val intentPattern: String,
-    val operationType: String? = null,  // e.g., "rename", "extract_function", "change_signature"
+    val operationType: String? = null, // e.g., "rename", "extract_function", "change_signature"
     val context: RecipeContext,
     val successfulActions: List<SuccessfulAction>,
     val verifiedAt: String,
     val successCount: Int = 1,
-    val lastUsedAt: String? = null
+    val lastUsedAt: String? = null,
 ) {
     /**
      * Context in which the recipe was verified.
      */
     @Serializable
     data class RecipeContext(
-        val precondition: String? = null,      // e.g., "CARET_ON_SYMBOL"
-        val responseType: String? = null,      // e.g., "INLINE_WIDGET", "DIALOG"
-        val application: String? = null,       // e.g., "IntelliJ IDEA"
-        val toolName: String? = null           // e.g., "Rename", "Extract Function"
+        val precondition: String? = null, // e.g., "CARET_ON_SYMBOL"
+        val responseType: String? = null, // e.g., "INLINE_WIDGET", "DIALOG"
+        val application: String? = null, // e.g., "IntelliJ IDEA"
+        val toolName: String? = null, // e.g., "Rename", "Extract Function"
     )
 
     /**
@@ -45,9 +45,9 @@ data class VerifiedRecipe(
      */
     @Serializable
     data class SuccessfulAction(
-        val uiStateDescription: String,        // What the UI looked like
-        val action: ActionJson,                // What action was taken
-        val result: String                     // What happened
+        val uiStateDescription: String, // What the UI looked like
+        val action: ActionJson, // What action was taken
+        val result: String, // What happened
     )
 
     /**
@@ -56,33 +56,37 @@ data class VerifiedRecipe(
     @Serializable
     data class ActionJson(
         val type: String,
-        val params: Map<String, String> = emptyMap()
+        val params: Map<String, String> = emptyMap(),
     ) {
         fun toAction(): Action {
             return when (type.lowercase()) {
                 // Navigation actions
                 "open_file" -> Action.OpenFile(params["path"] ?: "")
                 "move_caret" -> Action.MoveCaret(params["symbol"] ?: "")
-                "select_lines" -> Action.SelectLines(
-                    start = params["start"]?.toIntOrNull() ?: 1,
-                    end = params["end"]?.toIntOrNull() ?: 1
-                )
+                "select_lines" ->
+                    Action.SelectLines(
+                        start = params["start"]?.toIntOrNull() ?: 1,
+                        end = params["end"]?.toIntOrNull() ?: 1,
+                    )
                 // UI interaction actions
                 "click" -> Action.Click(params["target"] ?: "")
-                "type" -> Action.Type(
-                    text = params["text"] ?: "",
-                    clearFirst = params["clearFirst"]?.toBoolean() ?: true,
-                    target = params["target"]
-                )
+                "type" ->
+                    Action.Type(
+                        text = params["text"] ?: "",
+                        clearFirst = params["clearFirst"]?.toBoolean() ?: true,
+                        target = params["target"],
+                    )
                 "press_key" -> Action.PressKey(params["key"] ?: "Enter")
-                "select_dropdown" -> Action.SelectDropdown(
-                    target = params["target"] ?: "",
-                    value = params["value"] ?: ""
-                )
-                "wait" -> Action.Wait(
-                    elementType = params["elementType"] ?: "dialog",
-                    timeoutMs = params["timeoutMs"]?.toLongOrNull() ?: 5000
-                )
+                "select_dropdown" ->
+                    Action.SelectDropdown(
+                        target = params["target"] ?: "",
+                        value = params["value"] ?: "",
+                    )
+                "wait" ->
+                    Action.Wait(
+                        elementType = params["elementType"] ?: "dialog",
+                        timeoutMs = params["timeoutMs"]?.toLongOrNull() ?: 5000,
+                    )
                 else -> Action.Observe
             }
         }
@@ -93,26 +97,42 @@ data class VerifiedRecipe(
                     // Navigation actions
                     is Action.OpenFile -> ActionJson("open_file", mapOf("path" to action.path))
                     is Action.MoveCaret -> ActionJson("move_caret", mapOf("symbol" to action.symbol))
-                    is Action.SelectLines -> ActionJson("select_lines", mapOf(
-                        "start" to action.start.toString(),
-                        "end" to action.end.toString()
-                    ))
+                    is Action.SelectLines ->
+                        ActionJson(
+                            "select_lines",
+                            mapOf(
+                                "start" to action.start.toString(),
+                                "end" to action.end.toString(),
+                            ),
+                        )
                     // UI interaction actions
                     is Action.Click -> ActionJson("click", mapOf("target" to action.target))
-                    is Action.Type -> ActionJson("type", mapOf(
-                        "text" to action.text,
-                        "clearFirst" to action.clearFirst.toString(),
-                        "target" to (action.target ?: "")
-                    ))
+                    is Action.Type ->
+                        ActionJson(
+                            "type",
+                            mapOf(
+                                "text" to action.text,
+                                "clearFirst" to action.clearFirst.toString(),
+                                "target" to (action.target ?: ""),
+                            ),
+                        )
                     is Action.PressKey -> ActionJson("press_key", mapOf("key" to action.key))
-                    is Action.SelectDropdown -> ActionJson("select_dropdown", mapOf(
-                        "target" to action.target,
-                        "value" to action.value
-                    ))
-                    is Action.Wait -> ActionJson("wait", mapOf(
-                        "elementType" to action.elementType,
-                        "timeoutMs" to action.timeoutMs.toString()
-                    ))
+                    is Action.SelectDropdown ->
+                        ActionJson(
+                            "select_dropdown",
+                            mapOf(
+                                "target" to action.target,
+                                "value" to action.value,
+                            ),
+                        )
+                    is Action.Wait ->
+                        ActionJson(
+                            "wait",
+                            mapOf(
+                                "elementType" to action.elementType,
+                                "timeoutMs" to action.timeoutMs.toString(),
+                            ),
+                        )
                     is Action.UseRecipe -> ActionJson("use_recipe", mapOf("recipeId" to action.recipeId))
                     is Action.Observe -> ActionJson("observe")
                     is Action.Complete -> ActionJson("complete")
@@ -123,16 +143,21 @@ data class VerifiedRecipe(
     }
 
     companion object {
-        private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+        private val json =
+            Json {
+                ignoreUnknownKeys = true
+                prettyPrint = true
+            }
 
         /**
          * Generate a unique ID for a recipe.
          */
         fun generateId(intentPattern: String): String {
-            val sanitized = intentPattern.lowercase()
-                .replace(Regex("[^a-z0-9]+"), "_")
-                .take(30)
-                .trim('_')
+            val sanitized =
+                intentPattern.lowercase()
+                    .replace(Regex("[^a-z0-9]+"), "_")
+                    .take(30)
+                    .trim('_')
             val timestamp = Instant.now().epochSecond
             return "${sanitized}_$timestamp"
         }
@@ -156,7 +181,10 @@ data class VerifiedRecipe(
         /**
          * Save recipes to a JSON file.
          */
-        fun saveToFile(recipes: List<VerifiedRecipe>, path: String) {
+        fun saveToFile(
+            recipes: List<VerifiedRecipe>,
+            path: String,
+        ) {
             val file = File(path)
             file.parentFile?.mkdirs()
 
@@ -179,7 +207,6 @@ data class VerifiedRecipe(
  * 3. Never executed blindly
  */
 class RecipeRegistry(private val storagePath: String = "build/reports/verified-recipes.json") {
-
     private val recipes: MutableList<VerifiedRecipe> = mutableListOf()
 
     init {
@@ -211,10 +238,11 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
         val existing = recipes.find { it.intentPattern == recipe.intentPattern }
         if (existing != null) {
             // Update existing recipe
-            val updated = existing.copy(
-                successCount = existing.successCount + 1,
-                lastUsedAt = Instant.now().toString()
-            )
+            val updated =
+                existing.copy(
+                    successCount = existing.successCount + 1,
+                    lastUsedAt = Instant.now().toString(),
+                )
             recipes.remove(existing)
             recipes.add(updated)
         } else {
@@ -237,7 +265,7 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
     fun findMatching(intent: String): List<VerifiedRecipe> {
         // Extract operation type from intent
         val operationType = extractOperationType(intent)
-        
+
         return recipes.filter { recipe ->
             // Match on operation type if available
             if (recipe.operationType != null && operationType != null) {
@@ -250,7 +278,7 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
             }
         }.sortedByDescending { it.successCount }
     }
-    
+
     /**
      * Extract operation type from an intent string.
      */
@@ -290,7 +318,7 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
             RecipeSummary(
                 id = recipe.id,
                 intentPattern = recipe.intentPattern,
-                successCount = recipe.successCount
+                successCount = recipe.successCount,
             )
         }
     }
@@ -310,15 +338,16 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
     fun createRecipe(
         intent: String,
         context: VerifiedRecipe.RecipeContext,
-        actions: List<Pair<String, HistoryEntry>>
+        actions: List<Pair<String, HistoryEntry>>,
     ): VerifiedRecipe {
-        val successfulActions = actions.map { (uiState, entry) ->
-            VerifiedRecipe.SuccessfulAction(
-                uiStateDescription = uiState,
-                action = VerifiedRecipe.ActionJson.fromAction(entry.action),
-                result = entry.result
-            )
-        }
+        val successfulActions =
+            actions.map { (uiState, entry) ->
+                VerifiedRecipe.SuccessfulAction(
+                    uiStateDescription = uiState,
+                    action = VerifiedRecipe.ActionJson.fromAction(entry.action),
+                    result = entry.result,
+                )
+            }
 
         // Extract operation type from intent for better matching
         val operationType = extractOperationType(intent)
@@ -326,10 +355,10 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
         return VerifiedRecipe(
             id = VerifiedRecipe.generateId(intent),
             intentPattern = intent,
-            operationType = operationType,  // Store operation type for matching
+            operationType = operationType, // Store operation type for matching
             context = context,
             successfulActions = successfulActions,
-            verifiedAt = Instant.now().toString()
+            verifiedAt = Instant.now().toString(),
         )
     }
 }

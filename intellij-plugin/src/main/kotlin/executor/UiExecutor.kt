@@ -462,8 +462,24 @@ class UiExecutor(
      * Uses AppleScript on macOS to send keystrokes specifically to IntelliJ.
      */
     fun pressKey(keyName: String) {
+        // Map key name to AppleScript key name format
+        val appleScriptKeyName = when (keyName.lowercase()) {
+            "enter", "return" -> "return"
+            "escape", "esc" -> "escape"
+            "tab" -> "tab"
+            "backspace" -> "delete"
+            "delete" -> "forward delete"
+            "up" -> "up arrow"
+            "down" -> "down arrow"
+            "left" -> "left arrow"
+            "right" -> "right arrow"
+            "f6" -> "f6"
+            "f5" -> "f5"
+            else -> keyName.lowercase()
+        }
+
         val keyCode = when (keyName.lowercase()) {
-            "enter" -> KeyEvent.VK_ENTER
+            "enter", "return" -> KeyEvent.VK_ENTER
             "escape", "esc" -> KeyEvent.VK_ESCAPE
             "tab" -> KeyEvent.VK_TAB
             "backspace" -> KeyEvent.VK_BACK_SPACE
@@ -475,13 +491,13 @@ class UiExecutor(
             "right" -> KeyEvent.VK_RIGHT
             "f6" -> KeyEvent.VK_F6
             "f5" -> KeyEvent.VK_F5
-            else -> KeyEvent.VK_ENTER // Default to Enter
+            else -> KeyEvent.VK_ENTER
         }
 
         // On macOS, use AppleScript to send keystrokes to IntelliJ specifically
         val osName = System.getProperty("os.name").lowercase()
         if (osName.contains("mac")) {
-            sendKeystrokeToIntelliJ(mapKeyCodeToAppleScript(keyCode))
+            sendKeystrokeToIntelliJ(appleScriptKeyName)
         } else {
             // Fallback to java.awt.Robot for other platforms
             val awtRobot = java.awt.Robot()
@@ -494,22 +510,32 @@ class UiExecutor(
 
     /**
      * Map Java KeyEvent to AppleScript key code.
+     * Returns null if the key should use keystroke instead of key code.
      */
-    private fun mapKeyCodeToAppleScript(keyCode: Int): String {
+    private fun mapKeyCodeToAppleScriptCode(keyCode: Int): Int? {
         return when (keyCode) {
-            KeyEvent.VK_ENTER -> "return"
-            KeyEvent.VK_ESCAPE -> "escape"
-            KeyEvent.VK_TAB -> "tab"
-            KeyEvent.VK_BACK_SPACE -> "delete"
-            KeyEvent.VK_DELETE -> "forward delete"
-            KeyEvent.VK_SPACE -> "space"
-            KeyEvent.VK_UP -> "up arrow"
-            KeyEvent.VK_DOWN -> "down arrow"
-            KeyEvent.VK_LEFT -> "left arrow"
-            KeyEvent.VK_RIGHT -> "right arrow"
-            KeyEvent.VK_F6 -> "f6"
-            KeyEvent.VK_F5 -> "f5"
-            else -> "return"
+            KeyEvent.VK_ESCAPE -> 53
+            KeyEvent.VK_ENTER -> 36
+            KeyEvent.VK_TAB -> 48
+            KeyEvent.VK_BACK_SPACE -> 51
+            KeyEvent.VK_DELETE -> 117
+            KeyEvent.VK_UP -> 126
+            KeyEvent.VK_DOWN -> 125
+            KeyEvent.VK_LEFT -> 123
+            KeyEvent.VK_RIGHT -> 124
+            KeyEvent.VK_F1 -> 122
+            KeyEvent.VK_F2 -> 120
+            KeyEvent.VK_F3 -> 99
+            KeyEvent.VK_F4 -> 118
+            KeyEvent.VK_F5 -> 96
+            KeyEvent.VK_F6 -> 97
+            KeyEvent.VK_F7 -> 98
+            KeyEvent.VK_F8 -> 100
+            KeyEvent.VK_F9 -> 101
+            KeyEvent.VK_F10 -> 109
+            KeyEvent.VK_F11 -> 103
+            KeyEvent.VK_F12 -> 111
+            else -> null
         }
     }
 
@@ -519,20 +545,60 @@ class UiExecutor(
      */
     private fun sendKeystrokeToIntelliJ(keyName: String, modifiers: List<String> = emptyList()) {
         try {
-            val modifierClause = if (modifiers.isNotEmpty()) {
-                "using {${modifiers.joinToString(", ")}}"
-            } else {
-                ""
-            }
+            // Check if this is a special key that needs key code instead of keystroke
+            val specialKeysWithCodes = mapOf(
+                "escape" to 53,
+                "return" to 36,
+                "tab" to 48,
+                "delete" to 51,
+                "forward delete" to 117,
+                "up arrow" to 126,
+                "down arrow" to 125,
+                "left arrow" to 123,
+                "right arrow" to 124,
+                "f6" to 97,
+                "f5" to 96
+            )
 
-            // Target the java process (QuestDB test IDE) instead of "IntelliJ IDEA"
-            val script = """
+            val keyCode = specialKeysWithCodes[keyName.lowercase()]
+
+            val script = if (keyCode != null) {
+                // Use key code for special keys
+                val modifierClause = if (modifiers.isNotEmpty()) {
+                    modifiers.joinToString(" ") { mod ->
+                        when (mod) {
+                            "command down" -> "command down"
+                            "shift down" -> "shift down"
+                            "control down" -> "control down"
+                            "option down" -> "option down"
+                            else -> mod
+                        }
+                    } + " "
+                } else {
+                    ""
+                }
+                """
+                tell application "System Events"
+                    tell process "java"
+                        ${modifierClause}key code $keyCode
+                    end tell
+                end tell
+                """.trimIndent()
+            } else {
+                // Use keystroke for regular keys
+                val modifierClause = if (modifiers.isNotEmpty()) {
+                    "using {${modifiers.joinToString(", ")}}"
+                } else {
+                    ""
+                }
+                """
                 tell application "System Events"
                     tell process "java"
                         keystroke "$keyName" $modifierClause
                     end tell
                 end tell
-            """.trimIndent()
+                """.trimIndent()
+            }
 
             val processBuilder = ProcessBuilder("osascript", "-e", script)
             processBuilder.start().waitFor()

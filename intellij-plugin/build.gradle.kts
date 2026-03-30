@@ -8,6 +8,18 @@ plugins {
     id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
 }
 
+// Load .env file if it exists
+val envProps = mutableMapOf<String, String>()
+File(rootDir, ".env").takeIf { it.exists() }?.forEachLine { line ->
+    val trimmed = line.trim()
+    if (trimmed.isNotEmpty() && !trimmed.startsWith("test123#")) {
+        val parts = trimmed.split("=", limit = 2)
+        if (parts.size == 2) {
+            envProps[parts[0].trim()] = parts[1].trim()
+        }
+    }
+}
+
 group = "com.tooldiscovery"
 version = "0.1.0"
 
@@ -45,8 +57,15 @@ dependencies {
     }
 
     // Remote Robot — for UI automation
-    implementation("com.intellij.remoterobot:remote-robot:0.11.23")
-    implementation("com.intellij.remoterobot:remote-fixtures:0.11.23")
+    // NOTE: Must exclude kotlinx-serialization-converter from Retrofit to avoid conflict
+    implementation("com.intellij.remoterobot:remote-robot:0.11.23") {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-converter")
+        exclude(group = "com.jakewharton.retrofit", module = "retrofit2-kotlinx-serialization-converter")
+    }
+    implementation("com.intellij.remoterobot:remote-fixtures:0.11.23") {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-serialization-converter")
+        exclude(group = "com.jakewharton.retrofit", module = "retrofit2-kotlinx-serialization-converter")
+    }
 
     // WebSocket client
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -115,10 +134,11 @@ tasks.register<JavaExec>("runGraphAgent") {
     group = "application"
     description = "Run the Graph-Enhanced UI Agent"
     dependsOn(tasks.compileKotlin)
-    classpath = sourceSets["main"].runtimeClasspath
+    // Use test classpath to ensure Remote Robot serialization works
+    classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("main.MainKt")
     // Pass task as argument: ./gradlew runGraphAgent --args="your task here"
-    // Override defaults via env: ROBOT_URL, LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+    // Environment variables are read from .env file via dotdash plugin
 }
 
 // Test configuration
@@ -128,6 +148,11 @@ tasks.test {
         events("passed", "skipped", "failed")
         showStandardStreams = true
     }
+    // Pass environment variables from .env to tests (fallback to system env)
+    environment("ROBOT_URL", providers.environmentVariable("ROBOT_URL").orElse(envProps["ROBOT_URL"] ?: "http://localhost:8082"))
+    environment("LLM_BASE_URL", providers.environmentVariable("LLM_BASE_URL").orElse(envProps["LLM_BASE_URL"] ?: "https://coding-intl.dashscope.aliyuncs.com/v1"))
+    environment("LLM_MODEL", providers.environmentVariable("LLM_MODEL").orElse(envProps["LLM_MODEL"] ?: "MiniMax-M2.5"))
+    environment("LLM_API_KEY", providers.environmentVariable("LLM_API_KEY").orElse(envProps["LLM_API_KEY"] ?: ""))
 }
 
 // Remote Robot version for UI testing

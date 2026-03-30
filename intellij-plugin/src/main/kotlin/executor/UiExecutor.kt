@@ -602,7 +602,8 @@ class UiExecutor(
 
             val processBuilder = ProcessBuilder("osascript", "-e", script)
             processBuilder.start().waitFor()
-            println("  [KEYBOARD] Sent '$keyName' to QuestDB test IDE via AppleScript")
+            val modifierStr = if (modifiers.isNotEmpty()) modifiers.joinToString("+") + "+" else ""
+            println("  [KEYBOARD] Sent '$modifierStr$keyName' to QuestDB test IDE via AppleScript")
         } catch (e: Exception) {
             println("  [WARNING] Could not send keystroke via AppleScript: ${e.message}")
             // Fallback to java.awt.Robot

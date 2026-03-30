@@ -56,15 +56,26 @@ class QuestDBFocusTest {
         val focusedApp = getFocusedApp()
         println("[TEST] Focused before shortcut: $focusedApp")
 
+        // Try to focus an editor first (QuestDB needs a file focused for Find to work)
+        try {
+            executor.focusEditor()
+            println("[TEST] Focused editor")
+            Thread.sleep(500)
+        } catch (e: Exception) {
+            println("[TEST] Warning: Could not focus editor: ${e.message}")
+        }
+
         // Send Command+F using executor (should target java process)
+        println("[TEST] About to send Command+F...")
         executor.pressShortcut("cmd f")
+        println("[TEST] Command+F sent")
 
         Thread.sleep(1000)
 
-        // Check if Find dialog opened
+        // Check if Find dialog opened - could be different container types
         val hasFindDialog = try {
             robot.find<ComponentFixture>(
-                byXpath("//div[@class='HeavyWeightWindow' or @class='DialogRootPane']"),
+                byXpath("//div[@class='HeavyWeightWindow' or @class='DialogRootPane' or contains(@class, 'JDialog')]"),
                 Duration.ofSeconds(2)
             )
             true
@@ -75,12 +86,15 @@ class QuestDBFocusTest {
         if (hasFindDialog) {
             println("[TEST] ✅ PASS: Find dialog appeared")
         } else {
-            println("[TEST] ❌ FAIL: Find dialog did not appear")
+            println("[TEST] ❌ FAIL: Find dialog did not appear (may need file open in QuestDB)")
         }
 
-        // Clean up - press Escape
+        // Clean up - press Escape multiple times
         try {
-            executor.pressEscape()
+            repeat(3) {
+                executor.pressEscape()
+                Thread.sleep(200)
+            }
         } catch (_: Exception) {}
     }
 

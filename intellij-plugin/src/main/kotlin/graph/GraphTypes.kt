@@ -48,6 +48,7 @@ data class ElementNode(
  * @param action Action type (click, type, press_key, etc.)
  * @param toPage Destination page ID after the action
  * @param params Additional parameters passed with the action
+ * @param success Whether the transition succeeded (true) or failed (false)
  */
 @Serializable
 data class Transition(
@@ -56,6 +57,26 @@ data class Transition(
     val action: String,
     val toPage: String,
     val params: Map<String, String> = emptyMap(),
+    val success: Boolean = true,
+)
+
+/**
+ * A transition that was attempted but failed.
+ * Used to avoid repeating unsuccessful actions.
+ *
+ * @param fromPage Page where the failed action was attempted
+ * @param elementId ID of the element that failed to be acted upon
+ * @param action Action type that failed
+ * @param reason Human-readable description of why it failed
+ * @param timestamp When the failure occurred (for staleness checking)
+ */
+@Serializable
+data class FailedTransition(
+    val fromPage: String,
+    val elementId: String,
+    val action: String,
+    val reason: String,
+    val timestamp: Long = System.currentTimeMillis(),
 )
 
 /**
@@ -88,4 +109,5 @@ data class SerializedGraph(
     val elements: List<ElementNode>,
     val transitions: List<Transition>,
     val shortcuts: List<Shortcut>,
+    val failedTransitions: List<FailedTransition> = emptyList(),
 )

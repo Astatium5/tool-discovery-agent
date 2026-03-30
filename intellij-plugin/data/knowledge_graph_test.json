@@ -3,12 +3,12 @@
         {
             "id": "editor_idle",
             "description": "Editor in idle state",
-            "visitCount": 93
+            "visitCount": 151
         },
         {
             "id": "context_menu",
             "description": "Context menu with actions",
-            "visitCount": 47
+            "visitCount": 79
         }
     ],
     "elements": [
@@ -238,8 +238,68 @@
             "params": {
                 "target": "context_menu"
             }
+        },
+        {
+            "fromPage": "context_menu",
+            "elementId": "context_menu::unknown::unknown",
+            "action": "press_key",
+            "toPage": "editor_idle",
+            "params": {
+                "key": "escape"
+            }
+        },
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "observe",
+            "toPage": "context_menu"
+        },
+        {
+            "fromPage": "context_menu",
+            "elementId": "context_menu::unknown::unknown",
+            "action": "press_key",
+            "toPage": "editor_idle",
+            "params": {
+                "key": "escape"
+            }
+        },
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "press_shortcut",
+            "toPage": "context_menu",
+            "params": {
+                "keys": "meta shift n"
+            }
+        },
+        {
+            "fromPage": "context_menu",
+            "elementId": "context_menu::unknown::unknown",
+            "action": "press_key",
+            "toPage": "editor_idle",
+            "params": {
+                "key": "escape"
+            }
+        },
+        {
+            "fromPage": "context_menu",
+            "elementId": "context_menu::unknown::unknown",
+            "action": "press_shortcut",
+            "toPage": "editor_idle",
+            "params": {
+                "keys": "meta f"
+            }
         }
     ],
     "shortcuts": [
+    ],
+    "failedTransitions": [
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "press_key",
+            "reason": "{\"reasoning\": \"I pressed Shift+F6 to initiate the rename refactoring. The action was successful. Now I need to observe the current state to see if the rename dialog has opened or if I need to take further action. Let me check what's currently visible on the screen.\", \"decision\": {\"action\": \"observe\", \"params\": {}}} }",
+            "timestamp": 1774860364401
+        }
     ]
 }

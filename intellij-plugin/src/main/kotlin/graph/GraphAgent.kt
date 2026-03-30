@@ -417,6 +417,7 @@ class GraphAgent(
      *
      * After an action is executed, observes the new page state and records
      * the transition (fromPage → toPage) in the knowledge graph for future use.
+     * Records both successful and failed transitions for learning.
      */
     private fun updateGraph(
         record: ActionRecord,
@@ -427,24 +428,38 @@ class GraphAgent(
         val updatedRecord = record.copy(pageAfter = newState.pageId)
         actionHistory[actionHistory.size - 1] = updatedRecord
 
-        if (record.success && prevPageId != null && prevPageId != newState.pageId) {
-            // Use actual element class if available
+        if (prevPageId != null) {
             val elementClass = record.elementClass ?: "unknown"
             val elementLabel = record.elementLabel ?: record.params["target"] ?: "unknown"
 
             val elementId = KnowledgeGraph.makeElementId(
                 pageId = prevPageId,
-                cls = elementClass,  // Was: "unknown"
-                label = elementLabel,  // Was: params["target"]
+                cls = elementClass,
+                label = elementLabel,
             )
 
-            graph.addTransition(
-                fromPage = prevPageId,
-                elementId = elementId,
-                action = record.actionType,
-                toPage = newState.pageId,
-                params = record.params,
-            )
+            if (record.success && prevPageId != newState.pageId) {
+                // Successful transition - record it
+                graph.addTransition(
+                    fromPage = prevPageId,
+                    elementId = elementId,
+                    action = record.actionType,
+                    toPage = newState.pageId,
+                    params = record.params,
+                    success = record.success,
+                )
+            } else if (!record.success) {
+                // Failed transition - record it to avoid repeating mistakes
+                val failureReason = record.reasoning.takeIf { it.isNotBlank() }
+                    ?: "Action execution failed"
+                graph.addFailedTransition(
+                    fromPage = prevPageId,
+                    elementId = elementId,
+                    action = record.actionType,
+                    reason = failureReason,
+                )
+                println("  Recorded failed transition: ${record.actionType} on \"$elementLabel\" - $failureReason")
+            }
 
             // Also store the element in the graph for future reference
             val elementNode = ElementNode(
@@ -459,6 +474,15 @@ class GraphAgent(
         }
 
         graph.save(graphPath)
+
+        // Discover shortcuts periodically (every 5 actions)
+        if (actionHistory.size % 5 == 0 && actionHistory.size >= 10) {
+            val discovered = graph.discoverShortcuts(actionHistory)
+            if (discovered.isNotEmpty()) {
+                println("Discovered ${discovered.size} new shortcuts:")
+                discovered.forEach { println("  - ${it.name}") }
+            }
+        }
 
         return newState
     }

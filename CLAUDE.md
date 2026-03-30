@@ -157,23 +157,18 @@ the file for the next run. This requires the repo to be clean before starting ev
 
 - [x] Remote Robot is live at `https://intellij.sudhanva.dev` (tunnel) and `localhost:8082`
 - [x] Python UIStateParser correctly parses Remote Robot HTML into PageState
+- [x] Kotlin GraphAgent complete (see docs/graph_agent_evaluation.md for metrics)
 - [x] KnowledgeGraph with NetworkX, JSON persistence, LLM context generation
 - [x] LangGraph agent loop (observe→reason→act→update_graph→check_complete)
 - [x] LLM integration (OpenAI-compatible, reads env vars)
 - [x] Per-iteration progress logging
-- [x] Evaluation runner with metrics
-- [x] Kotlin bridge server code written (`AgentBridgeServer.kt`)
+- [x] All 61 unit tests passing (run: `./gradlew test --tests "*graph*"`)
 
-## What Still Needs Doing / Verifying
+## Quick Start
 
-- [ ] **Build and run the Kotlin bridge server** — first time running `./gradlew runBridgeServer`
-      may need dependency downloads; verify it starts and responds to `GET /ping`
-- [ ] **Smoke test the bridge** — `python3 -m src status` should show bridge reachable
-- [ ] **Run first task** — `python3 -m src run --task "rename executeRecipe to runRecipe"`
-      and watch IntelliJ respond; check action log makes sense
-- [ ] **Fix any issues** that come up (element XPaths wrong, page_id inference off, etc.)
-- [ ] **Run full evaluation** once single task works
-- [ ] **Compare metrics** — run with `--clear-graph` (baseline) vs normal (graph-assisted)
+**Run smoke tests** (works with any open project): `cd intellij-plugin && ./run-smoke-test.sh`
+**Check Remote Robot connection:** `curl -s http://localhost:8082 | grep -o 'title="[^"]*"'`
+**See detailed implementation status:** `docs/superpowers/plans/2026-03-29-graph-agent-refactor.md`
 
 ---
 
@@ -197,6 +192,9 @@ the file for the next run. This requires the repo to be clean before starting ev
 
 5. **`shift_f6` shortcut** — Rename in IntelliJ can also be triggered with Shift+F6. This
    is more reliable than navigating menus. The prompt mentions it as available via `press_key`.
+
+6. **IDE focus required for UI tests** — Tests use AppleScript to focus IntelliJ. If tests
+   fail, manually click the IDE window and retry. See `intellij-plugin/run-smoke-test.sh`.
 
 ---
 

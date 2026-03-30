@@ -1,0 +1,245 @@
+{
+    "pages": [
+        {
+            "id": "editor_idle",
+            "description": "Editor in idle state",
+            "visitCount": 93
+        },
+        {
+            "id": "context_menu",
+            "description": "Context menu with actions",
+            "visitCount": 47
+        }
+    ],
+    "elements": [
+        {
+            "id": "editor_idle::ActionButton::Build Project",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Build Project",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Build Project']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::The file in the editor is not runnable",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "The file in the editor is not runnable",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='The file in the editor is not runnable']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Stop",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Stop",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Stop']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Update Project___",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Update Project...",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Update Project...']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Commit___",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Commit...",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Commit...']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Push___",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Push...",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Push...']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Show History",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Show History",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Show History']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Rollback_",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Rollback…",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Rollback…']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Search Everywhere",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Search Everywhere",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Search Everywhere']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::ActionButton",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "ActionButton",
+            "xpath": "//div[@class='ActionButton']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Space_ The Integrated Team Environment",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Space: The Integrated Team Environment",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Space: The Integrated Team Environment']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Select Opened File __F1_ 1_",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Select Opened File (⌥F1, 1)",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Select Opened File (⌥F1, 1)']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Expand All",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Expand All",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Expand All']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Collapse All",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Collapse All",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Collapse All']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Options",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Options",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Options']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Hide",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Hide",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Hide']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Recent Files_ Tab Actions_ and More",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Recent Files, Tab Actions, and More",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Recent Files, Tab Actions, and More']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::EditorComponentImpl::Editor for CLAUDE_md",
+            "pageId": "editor_idle",
+            "cls": "EditorComponentImpl",
+            "label": "Editor for CLAUDE.md",
+            "xpath": "//div[@class='EditorComponentImpl' and @accessiblename='Editor for CLAUDE.md']",
+            "role": "unknown"
+        },
+        {
+            "id": "editor_idle::ActionButton::Previous Highlighted Error",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Previous Highlighted Error",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Previous Highlighted Error']",
+            "role": "button"
+        },
+        {
+            "id": "editor_idle::ActionButton::Next Highlighted Error",
+            "pageId": "editor_idle",
+            "cls": "ActionButton",
+            "label": "Next Highlighted Error",
+            "xpath": "//div[@class='ActionButton' and @accessiblename='Next Highlighted Error']",
+            "role": "button"
+        },
+        {
+            "id": "context_menu::EditorComponentImpl::Editor for CLAUDE_md",
+            "pageId": "context_menu",
+            "cls": "EditorComponentImpl",
+            "label": "Editor for CLAUDE.md",
+            "xpath": "//div[@class='EditorComponentImpl' and @accessiblename='Editor for CLAUDE.md']",
+            "role": "unknown"
+        },
+        {
+            "id": "editor_idle::unknown::unknown",
+            "pageId": "editor_idle",
+            "cls": "unknown",
+            "label": "unknown",
+            "xpath": "",
+            "role": "unknown"
+        },
+        {
+            "id": "context_menu::unknown::unknown",
+            "pageId": "context_menu",
+            "cls": "unknown",
+            "label": "unknown",
+            "xpath": "",
+            "role": "unknown"
+        },
+        {
+            "id": "editor_idle::unknown::context_menu",
+            "pageId": "editor_idle",
+            "cls": "unknown",
+            "label": "context_menu",
+            "xpath": "",
+            "role": "unknown"
+        }
+    ],
+    "transitions": [
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "observe",
+            "toPage": "context_menu"
+        },
+        {
+            "fromPage": "context_menu",
+            "elementId": "context_menu::unknown::unknown",
+            "action": "press_key",
+            "toPage": "editor_idle",
+            "params": {
+                "key": "escape"
+            }
+        },
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::unknown",
+            "action": "press_shortcut",
+            "toPage": "context_menu",
+            "params": {
+                "keys": "meta shift n"
+            }
+        },
+        {
+            "fromPage": "editor_idle",
+            "elementId": "editor_idle::unknown::context_menu",
+            "action": "observe",
+            "toPage": "context_menu",
+            "params": {
+                "target": "context_menu"
+            }
+        }
+    ],
+    "shortcuts": [
+    ]
+}

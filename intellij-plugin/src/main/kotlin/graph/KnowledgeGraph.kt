@@ -3,6 +3,7 @@ package graph
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import parser.UiComponent
 import java.nio.file.Files
 import java.nio.file.Paths
 
@@ -25,6 +26,15 @@ class KnowledgeGraph(private val json: Json = Json { prettyPrint = true; ignoreU
     private val elements: MutableMap<String, ElementNode> = mutableMapOf()
     private val transitions: MutableList<Transition> = mutableListOf()
     private val shortcuts: MutableMap<String, Shortcut> = mutableMapOf()
+
+    /**
+     * Delta between stored and current elements on a page.
+     */
+    data class ElementDelta(
+        val newElements: List<ElementNode>,
+        val changedElements: List<ElementNode>,
+        val unchangedCount: Int,
+    )
 
     fun getPage(pageId: String): PageNode? = pages[pageId]
 
@@ -140,6 +150,107 @@ class KnowledgeGraph(private val json: Json = Json { prettyPrint = true; ignoreU
             data.shortcuts.forEach { shortcuts[it.name] = it }
         } catch (e: Exception) {
             println("Warning: Failed to load knowledge graph: ${e.message}")
+        }
+    }
+
+    // ── Element Storage (Task 2) ─────────────────────────────────────────────
+
+    /**
+     * Check if we've seen this page before and have elements stored.
+     */
+    fun hasVisitedPage(pageId: String): Boolean {
+        return pages[pageId]?.let { it.visitCount > 1 } ?: false
+    }
+
+    /**
+     * Get all elements we've seen on a page.
+     */
+    fun getElementsForPage(pageId: String): List<ElementNode> {
+        return elements.values.filter { it.pageId == pageId }
+    }
+
+    /**
+     * Find an element by page and label (fuzzy match).
+     */
+    fun findElement(pageId: String, label: String): ElementNode? {
+        return elements.values.find {
+            it.pageId == pageId &&
+            (it.label == label || it.label.contains(label, ignoreCase = true))
+        }
+    }
+
+    /**
+     * Compare current UI elements with stored elements.
+     * Returns pair of (newElements, changedElements).
+     */
+    fun computeElementDelta(pageId: String, currentElements: List<UiComponent>): ElementDelta {
+        val storedElements = getElementsForPage(pageId)
+        val storedByLabel = storedElements.associateBy { it.label }
+
+        val new = mutableListOf<ElementNode>()
+        val changed = mutableListOf<ElementNode>()
+        var unchanged = 0
+
+        for (element in currentElements) {
+            val stored = storedByLabel[element.label]
+            if (stored == null) {
+                // New element
+                new.add(ElementNode(
+                    id = makeElementId(pageId, element.cls, element.label),
+                    pageId = pageId,
+                    cls = element.cls,
+                    label = element.label,
+                    xpath = element.xpath,
+                    role = inferRoleFromClass(element.cls),
+                ))
+            } else {
+                // Check if anything changed
+                if (stored.cls != element.cls || stored.xpath != element.xpath) {
+                    changed.add(ElementNode(
+                        id = stored.id,
+                        pageId = pageId,
+                        cls = element.cls,
+                        label = element.label,
+                        xpath = element.xpath,
+                        role = inferRoleFromClass(element.cls),
+                    ))
+                } else {
+                    unchanged++
+                }
+            }
+        }
+
+        return ElementDelta(new, changed, unchanged)
+    }
+
+    /**
+     * Store all elements observed on a page visit.
+     */
+    fun storeElements(pageId: String, uiComponents: List<UiComponent>) {
+        for (element in uiComponents) {
+            val elementNode = ElementNode(
+                id = makeElementId(pageId, element.cls, element.label),
+                pageId = pageId,
+                cls = element.cls,
+                label = element.label,
+                xpath = element.xpath,
+                role = inferRoleFromClass(element.cls),
+            )
+            addElement(elementNode)
+        }
+    }
+
+    /**
+     * Infer UI role from component class name.
+     */
+    private fun inferRoleFromClass(cls: String): String {
+        return when {
+            cls.contains("Button", ignoreCase = true) -> "button"
+            cls.contains("MenuItem", ignoreCase = true) -> "menu_item"
+            cls.contains("TextField", ignoreCase = true) -> "text_field"
+            cls.contains("CheckBox", ignoreCase = true) -> "checkbox"
+            cls.contains("ComboBox", ignoreCase = true) -> "dropdown"
+            else -> "unknown"
         }
     }
 

@@ -179,6 +179,11 @@ class GraphAgent(
         graph.addPage(PageNode(pageState.pageId, pageState.description))
         graph.recordVisit(pageState.pageId)
 
+        // Store elements on first visit to enable delta computation later
+        if (!graph.hasVisitedPage(pageState.pageId)) {
+            graph.storeElements(pageState.pageId, pageState.elements)
+        }
+
         return pageState
     }
 
@@ -265,8 +270,10 @@ class GraphAgent(
         appendLine(task)
         appendLine()
 
-        appendLine("## Current UI State")
-        appendLine(page.toPromptString())
+        // NEW: Use delta-aware prompt for revisited pages
+        val hasVisitedBefore = graph.hasVisitedPage(page.pageId)
+        val knownElements = graph.getElementsForPage(page.pageId)
+        appendLine(page.toDeltaPromptString(hasVisitedBefore, knownElements))
         appendLine()
 
         if (currentPageId != null) {

@@ -26,124 +26,126 @@ import parser.UiTreeParser
  * ./gradlew runGraphAgent --args="rename method executeRecipe to runRecipe"
  * ```
  */
-fun main(args: Array<String>) = runBlocking {
-    // Load environment variables with defaults
-    val robotUrl = loadEnvVar("ROBOT_URL", "http://localhost:8082")
-    val llmBaseUrl = loadEnvVar("LLM_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
-    val llmModel = loadEnvVar("LLM_MODEL", "MiniMax-M2.5")
-    val llmApiKey = loadEnvVar("LLM_API_KEY", "")
+fun main(args: Array<String>) =
+    runBlocking {
+        // Load environment variables with defaults
+        val robotUrl = loadEnvVar("ROBOT_URL", "http://localhost:8082")
+        val llmBaseUrl = loadEnvVar("LLM_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
+        val llmModel = loadEnvVar("LLM_MODEL", "MiniMax-M2.5")
+        val llmApiKey = loadEnvVar("LLM_API_KEY", "")
 
-    // Validate required environment variables
-    if (llmApiKey.isEmpty()) {
-        System.err.println("ERROR: LLM_API_KEY environment variable is required")
-        System.err.println()
-        System.err.println("Please set it in your environment or .env file:")
-        System.err.println("  export LLM_API_KEY=your_api_key_here")
-        System.exit(1)
-    }
-
-    // Get task from command line argument
-    val task = args.firstOrNull()
-    if (task.isNullOrBlank()) {
-        System.err.println("ERROR: No task specified")
-        System.err.println()
-        System.err.println("Usage: ./gradlew runGraphAgent --args=\"<task description>\"")
-        System.err.println()
-        System.err.println("Example:")
-        System.err.println("  ./gradlew runGraphAgent --args=\"rename method executeRecipe to runRecipe\"")
-        System.exit(1)
-    }
-
-    // Task is guaranteed to be non-null here
-    val nonNullTask: String = task!!
-
-    // Print configuration
-    println("=== Graph-Enhanced UI Agent ===")
-    println("Robot URL: $robotUrl")
-    println("LLM Base URL: $llmBaseUrl")
-    println("LLM Model: $llmModel")
-    println("Task: $nonNullTask")
-    println()
-
-    try {
-        // Initialize components
-        println("Initializing components...")
-
-        // Remote Robot connection
-        val robot = RemoteRobot(robotUrl)
-
-        // UI Executor for executing actions
-        val executor = UiExecutor(robot)
-
-        // LLM Client for reasoning
-        val llmClient = LlmClient(
-            baseUrl = llmBaseUrl,
-            model = llmModel,
-            apiKey = llmApiKey
-        )
-
-        // UI Tree Provider for fetching HTML from Remote Robot
-        val treeProvider = HtmlUiTreeProvider(robotUrl)
-
-        // UI Tree Parser for parsing HTML into PageState (singleton object)
-        val parser = UiTreeParser
-
-        // Graph Agent with knowledge graph persistence
-        val agent = GraphAgent(
-            executor = executor,
-            llmClient = llmClient,
-            treeProvider = treeProvider,
-            parser = parser,
-            graphPath = "data/knowledge_graph.json",
-            maxIterations = 30
-        )
-
-        println("✓ Components initialized")
-        println()
-
-        // Execute task
-        val result = agent.execute(nonNullTask)
-
-        // Print result
-        println()
-        println("=== Execution Complete ===")
-        println()
-
-        if (result.success) {
-            println("✓ SUCCESS")
-        } else {
-            println("✗ FAILED")
+        // Validate required environment variables
+        if (llmApiKey.isEmpty()) {
+            System.err.println("ERROR: LLM_API_KEY environment variable is required")
+            System.err.println()
+            System.err.println("Please set it in your environment or .env file:")
+            System.err.println("  export LLM_API_KEY=your_api_key_here")
+            System.exit(1)
         }
 
-        println()
-        println("Message: ${result.message}")
-        println("Iterations: ${result.iterations}")
-        println("Total Tokens: ${result.tokenCount}")
+        // Get task from command line argument (join all args with spaces)
+        val task = args.joinToString(" ")
+        if (task.isNullOrBlank()) {
+            System.err.println("ERROR: No task specified")
+            System.err.println()
+            System.err.println("Usage: ./gradlew runGraphAgent --args=\"<task description>\"")
+            System.err.println()
+            System.err.println("Example:")
+            System.err.println("  ./gradlew runGraphAgent --args=\"rename method executeRecipe to runRecipe\"")
+            System.exit(1)
+        }
+
+        // Task is guaranteed to be non-null here
+        val nonNullTask: String = task!!
+
+        // Print configuration
+        println("=== Graph-Enhanced UI Agent ===")
+        println("Robot URL: $robotUrl")
+        println("LLM Base URL: $llmBaseUrl")
+        println("LLM Model: $llmModel")
+        println("Task: $nonNullTask")
         println()
 
-        if (result.actionHistory.isNotEmpty()) {
-            println("Action Log:")
-            result.actionHistory.forEachIndexed { index, record ->
-                val status = if (record.success) "✓" else "✗"
-                println("  ${index + 1}. $status ${record.actionType} on ${record.pageBefore}")
-                if (record.params.isNotEmpty()) {
-                    println("     Params: ${record.params}")
-                }
-                if (record.reasoning.isNotEmpty()) {
-                    println("     Reasoning: ${record.reasoning.take(100)}${if (record.reasoning.length > 100) "..." else ""}")
+        try {
+            // Initialize components
+            println("Initializing components...")
+
+            // Remote Robot connection
+            val robot = RemoteRobot(robotUrl)
+
+            // UI Executor for executing actions
+            val executor = UiExecutor(robot)
+
+            // LLM Client for reasoning
+            val llmClient =
+                LlmClient(
+                    baseUrl = llmBaseUrl,
+                    model = llmModel,
+                    apiKey = llmApiKey,
+                )
+
+            // UI Tree Provider for fetching HTML from Remote Robot
+            val treeProvider = HtmlUiTreeProvider(robotUrl)
+
+            // UI Tree Parser for parsing HTML into PageState (singleton object)
+            val parser = UiTreeParser
+
+            // Graph Agent with knowledge graph persistence
+            val agent =
+                GraphAgent(
+                    executor = executor,
+                    llmClient = llmClient,
+                    treeProvider = treeProvider,
+                    parser = parser,
+                    graphPath = "data/knowledge_graph.json",
+                    maxIterations = 30,
+                )
+
+            println("✓ Components initialized")
+            println()
+
+            // Execute task
+            val result = agent.execute(nonNullTask)
+
+            // Print result
+            println()
+            println("=== Execution Complete ===")
+            println()
+
+            if (result.success) {
+                println("✓ SUCCESS")
+            } else {
+                println("✗ FAILED")
+            }
+
+            println()
+            println("Message: ${result.message}")
+            println("Iterations: ${result.iterations}")
+            println("Total Tokens: ${result.tokenCount}")
+            println()
+
+            if (result.actionHistory.isNotEmpty()) {
+                println("Action Log:")
+                result.actionHistory.forEachIndexed { index, record ->
+                    val status = if (record.success) "✓" else "✗"
+                    println("  ${index + 1}. $status ${record.actionType} on ${record.pageBefore}")
+                    if (record.params.isNotEmpty()) {
+                        println("     Params: ${record.params}")
+                    }
+                    if (record.reasoning.isNotEmpty()) {
+                        println("     Reasoning: ${record.reasoning.take(100)}${if (record.reasoning.length > 100) "..." else ""}")
+                    }
                 }
             }
+
+            // Exit with appropriate code
+            System.exit(if (result.success) 0 else 1)
+        } catch (e: Exception) {
+            System.err.println("ERROR: ${e.message}")
+            e.printStackTrace()
+            System.exit(1)
         }
-
-        // Exit with appropriate code
-        System.exit(if (result.success) 0 else 1)
-
-    } catch (e: Exception) {
-        System.err.println("ERROR: ${e.message}")
-        e.printStackTrace()
-        System.exit(1)
     }
-}
 
 /**
  * Load an environment variable with a default value.
@@ -151,7 +153,10 @@ fun main(args: Array<String>) = runBlocking {
  * First checks System.getenv(), then falls back to reading from .env file
  * in the project root directory.
  */
-private fun loadEnvVar(name: String, default: String): String {
+private fun loadEnvVar(
+    name: String,
+    default: String,
+): String {
     // Check system environment first
     val value = System.getenv(name)
     if (!value.isNullOrBlank()) {

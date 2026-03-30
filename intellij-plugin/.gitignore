@@ -1,0 +1,16 @@
+# Compiled bytecode
+bin/
+build/
+
+# Gradle
+.gradle/
+*.iml
+
+# Knowledge graph runtime data
+data/knowledge_graph.json
+data/*.jsonl
+
+# IDE
+.idea/
+*.iml
+out/

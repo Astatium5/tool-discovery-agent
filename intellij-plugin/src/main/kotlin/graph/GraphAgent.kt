@@ -3,16 +3,10 @@ package graph
 import executor.UiExecutor
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import llm.LlmClient
-import org.jsoup.Jsoup
 import parser.HtmlUiTreeProvider
 import parser.UiTreeParser
-import java.io.File
 
 /**
  * Graph-based UI automation agent implementing AppAgentX approach.
@@ -28,10 +22,14 @@ class GraphAgent(
     private val treeProvider: HtmlUiTreeProvider,
     private val parser: UiTreeParser,
     private val graphPath: String = "data/knowledge_graph.json",
-    private val maxIterations: Int = 30
+    private val maxIterations: Int = 30,
 ) {
     private val graph = KnowledgeGraph().apply { load(graphPath) }
-    private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+    private val json =
+        Json {
+            prettyPrint = true
+            ignoreUnknownKeys = true
+        }
 
     companion object {
         private const val SETTLE_DELAY_MS = 500L
@@ -54,7 +52,7 @@ class GraphAgent(
         val pageBefore: String,
         val pageAfter: String,
         val reasoning: String,
-        val success: Boolean = true
+        val success: Boolean = true,
     )
 
     /**
@@ -65,7 +63,7 @@ class GraphAgent(
         val message: String,
         val actionHistory: List<ActionRecord> = emptyList(),
         val tokenCount: Int = 0,
-        val iterations: Int = 0
+        val iterations: Int = 0,
     )
 
     /**
@@ -109,10 +107,11 @@ class GraphAgent(
                 // 3. ACT: Execute the action
                 val record = act(decision, pageState.pageId, reasoning)
 
+                // Add to history BEFORE updateGraph so it can access the record
+                actionHistory.add(record)
+
                 // 4. UPDATE GRAPH: Record transition and save
                 val newPageState = updateGraph(record, prevPageId)
-
-                actionHistory.add(record)
 
                 // 5. CHECK COMPLETE: See if we're done
                 if (decision.action == "complete") {
@@ -122,7 +121,7 @@ class GraphAgent(
                         message = "Task completed: $reasoning",
                         actionHistory = actionHistory.toList(),
                         tokenCount = totalTokenCount,
-                        iterations = iteration
+                        iterations = iteration,
                     )
                 }
 
@@ -133,26 +132,26 @@ class GraphAgent(
                         message = "Task failed: $reasoning",
                         actionHistory = actionHistory.toList(),
                         tokenCount = totalTokenCount,
-                        iterations = iteration
+                        iterations = iteration,
                     )
                 }
 
                 // Wait for UI to settle after action
                 Thread.sleep(SETTLE_DELAY_MS)
-
             } catch (e: Exception) {
                 println("ERROR at iteration $iteration: ${e.message}")
                 e.printStackTrace()
 
                 // Record failed action
-                val failedRecord = ActionRecord(
-                    actionType = "error",
-                    params = mapOf("error" to (e.message ?: "unknown")),
-                    pageBefore = currentPageId ?: "unknown",
-                    pageAfter = currentPageId ?: "unknown",
-                    reasoning = "Execution error",
-                    success = false
-                )
+                val failedRecord =
+                    ActionRecord(
+                        actionType = "error",
+                        params = mapOf("error" to (e.message ?: "unknown")),
+                        pageBefore = currentPageId ?: "unknown",
+                        pageAfter = currentPageId ?: "unknown",
+                        reasoning = "Execution error",
+                        success = false,
+                    )
                 actionHistory.add(failedRecord)
 
                 return AgentResult(
@@ -160,7 +159,7 @@ class GraphAgent(
                     message = "Execution error at iteration $iteration: ${e.message}",
                     actionHistory = actionHistory.toList(),
                     tokenCount = totalTokenCount,
-                    iterations = iteration
+                    iterations = iteration,
                 )
             }
         }
@@ -172,7 +171,7 @@ class GraphAgent(
             message = "Max iterations reached without completion",
             actionHistory = actionHistory.toList(),
             tokenCount = totalTokenCount,
-            iterations = iteration
+            iterations = iteration,
         )
     }
 
@@ -188,13 +187,14 @@ class GraphAgent(
         // Get raw HTML for debugging (fetch directly from endpoint)
         val endpoint = "http://localhost:8082"
         val http = java.net.http.HttpClient.newHttpClient()
-        val response = http.send(
-            java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create(endpoint))
-                .GET()
-                .build(),
-            java.net.http.HttpResponse.BodyHandlers.ofString()
-        )
+        val response =
+            http.send(
+                java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(endpoint))
+                    .GET()
+                    .build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(),
+            )
         val html = response.body()
 
         // Infer page state from components
@@ -215,51 +215,58 @@ class GraphAgent(
      * @param history Recent action history
      * @return Pair of (reasoning text, decision with action and params)
      */
-    private fun reason(task: String, page: PageState, history: List<ActionRecord>): Pair<String, Decision> {
+    private fun reason(
+        task: String,
+        page: PageState,
+        history: List<ActionRecord>,
+    ): Pair<String, Decision> {
         // Build prompt with task, page context, graph context, and recent history
-        val prompt = buildString {
-            appendLine("## Task")
-            appendLine(task)
-            appendLine()
-
-            appendLine("## Current UI State")
-            appendLine(page.toPromptString())
-            appendLine()
-
-            // Add graph context
-            if (currentPageId != null) {
-                appendLine(graph.toPromptContext(currentPageId!!))
+        val prompt =
+            buildString {
+                appendLine("## Task")
+                appendLine(task)
                 appendLine()
-            }
 
-            // Add recent history (last 5 actions)
-            if (history.isNotEmpty()) {
-                appendLine("## Recent Actions")
-                history.takeLast(5).forEachIndexed { index, record ->
-                    appendLine("${index + 1}. ${record.actionType} on ${record.pageBefore}")
-                    appendLine("   Reasoning: ${record.reasoning}")
-                    appendLine("   Success: ${record.success}")
+                appendLine("## Current UI State")
+                appendLine(page.toPromptString())
+                appendLine()
+
+                // Add graph context
+                if (currentPageId != null) {
+                    appendLine(graph.toPromptContext(currentPageId!!))
+                    appendLine()
                 }
-                appendLine()
-            }
 
-            appendLine("## Your Decision")
-            appendLine("Provide your response in JSON format:")
-            appendLine("{")
-            appendLine("  \"reasoning\": \"your thought process\",")
-            appendLine("  \"decision\": {")
-            appendLine("    \"action\": \"click|type|press_key|press_shortcut|open_context_menu|click_menu_item|select_dropdown|click_dialog_button|observe|complete|fail\",")
-            appendLine("    \"params\": {")
-            appendLine("      \"target\": \"element label (for click)\",")
-            appendLine("      \"text\": \"text to type (for type)\",")
-            appendLine("      \"key\": \"key name (for press_key)\",")
-            appendLine("      \"keys\": \"shortcut keys (for press_shortcut)\",")
-            appendLine("      \"label\": \"menu item label (for click_menu_item/click_dialog_button)\",")
-            appendLine("      \"value\": \"dropdown value (for select_dropdown)\"")
-            appendLine("    }")
-            appendLine("  }")
-            appendLine("}")
-        }
+                // Add recent history (last 5 actions)
+                if (history.isNotEmpty()) {
+                    appendLine("## Recent Actions")
+                    history.takeLast(5).forEachIndexed { index, record ->
+                        appendLine("${index + 1}. ${record.actionType} on ${record.pageBefore}")
+                        appendLine("   Reasoning: ${record.reasoning}")
+                        appendLine("   Success: ${record.success}")
+                    }
+                    appendLine()
+                }
+
+                appendLine("## Your Decision")
+                appendLine("Provide your response in JSON format:")
+                appendLine("{")
+                appendLine("  \"reasoning\": \"your thought process\",")
+                appendLine("  \"decision\": {")
+                appendLine(
+                    "    \"action\": \"click|type|press_key|press_shortcut|open_context_menu|click_menu_item|select_dropdown|click_dialog_button|observe|complete|fail\",",
+                )
+                appendLine("    \"params\": {")
+                appendLine("      \"target\": \"element label (for click)\",")
+                appendLine("      \"text\": \"text to type (for type)\",")
+                appendLine("      \"key\": \"key name (for press_key)\",")
+                appendLine("      \"keys\": \"shortcut keys (for press_shortcut)\",")
+                appendLine("      \"label\": \"menu item label (for click_menu_item/click_dialog_button)\",")
+                appendLine("      \"value\": \"dropdown value (for select_dropdown)\"")
+                appendLine("    }")
+                appendLine("  }")
+                appendLine("}")
+            }
 
         // System prompt
         val systemPrompt = """You are an intelligent UI automation agent for IntelliJ IDEA.
@@ -292,10 +299,11 @@ Important notes:
 Provide your response as JSON with "reasoning" and "decision" fields."""
 
         // Call LLM
-        val response = llmClient.chatStructured(
-            systemPrompt = systemPrompt,
-            userPrompt = prompt
-        )
+        val response =
+            llmClient.chatStructured(
+                systemPrompt = systemPrompt,
+                userPrompt = prompt,
+            )
 
         // Track token usage (approximate based on response length)
         totalTokenCount += response.length
@@ -312,7 +320,11 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
      * @param reasoning The LLM's reasoning
      * @return ActionRecord with execution results
      */
-    private fun act(decision: Decision, pageBefore: String, reasoning: String): ActionRecord {
+    private fun act(
+        decision: Decision,
+        pageBefore: String,
+        reasoning: String,
+    ): ActionRecord {
         val actionType = decision.action
         val params = decision.params
 
@@ -321,26 +333,30 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
         try {
             when (actionType) {
                 "click" -> {
-                    val target = params["target"]
-                        ?: throw IllegalArgumentException("Missing 'target' parameter for click action")
+                    val target =
+                        params["target"]
+                            ?: throw IllegalArgumentException("Missing 'target' parameter for click action")
                     executor.clickComponent(target)
                 }
 
                 "type" -> {
-                    val text = params["text"]
-                        ?: throw IllegalArgumentException("Missing 'text' parameter for type action")
+                    val text =
+                        params["text"]
+                            ?: throw IllegalArgumentException("Missing 'text' parameter for type action")
                     executor.typeText(text)
                 }
 
                 "press_key" -> {
-                    val key = params["key"]
-                        ?: throw IllegalArgumentException("Missing 'key' parameter for press_key action")
+                    val key =
+                        params["key"]
+                            ?: throw IllegalArgumentException("Missing 'key' parameter for press_key action")
                     executor.pressKey(key)
                 }
 
                 "press_shortcut" -> {
-                    val keys = params["keys"]
-                        ?: throw IllegalArgumentException("Missing 'keys' parameter for press_shortcut action")
+                    val keys =
+                        params["keys"]
+                            ?: throw IllegalArgumentException("Missing 'keys' parameter for press_shortcut action")
                     executor.pressShortcut(keys)
                 }
 
@@ -349,20 +365,23 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
                 }
 
                 "click_menu_item" -> {
-                    val label = params["label"]
-                        ?: throw IllegalArgumentException("Missing 'label' parameter for click_menu_item action")
+                    val label =
+                        params["label"]
+                            ?: throw IllegalArgumentException("Missing 'label' parameter for click_menu_item action")
                     executor.clickMenuItem(label)
                 }
 
                 "select_dropdown" -> {
-                    val value = params["value"]
-                        ?: throw IllegalArgumentException("Missing 'value' parameter for select_dropdown action")
+                    val value =
+                        params["value"]
+                            ?: throw IllegalArgumentException("Missing 'value' parameter for select_dropdown action")
                     executor.selectDropdown(value)
                 }
 
                 "click_dialog_button" -> {
-                    val label = params["label"]
-                        ?: throw IllegalArgumentException("Missing 'label' parameter for click_dialog_button action")
+                    val label =
+                        params["label"]
+                            ?: throw IllegalArgumentException("Missing 'label' parameter for click_dialog_button action")
                     executor.clickDialogButton(label)
                 }
 
@@ -386,9 +405,8 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
                 pageBefore = pageBefore,
                 pageAfter = pageBefore, // Will be updated in updateGraph
                 reasoning = reasoning,
-                success = true
+                success = true,
             )
-
         } catch (e: Exception) {
             println("  Action failed: ${e.message}")
 
@@ -398,7 +416,7 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
                 pageBefore = pageBefore,
                 pageAfter = pageBefore,
                 reasoning = reasoning,
-                success = false
+                success = false,
             )
         }
     }
@@ -410,7 +428,10 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
      * @param prevPageId The previous page ID (before this action)
      * @return New PageState after the action
      */
-    private fun updateGraph(record: ActionRecord, prevPageId: String?): PageState {
+    private fun updateGraph(
+        record: ActionRecord,
+        prevPageId: String?,
+    ): PageState {
         // Observe new state after action
         val newState = observe()
 
@@ -430,17 +451,18 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
         // Record transition if action was successful and pages changed
         if (record.success && prevPageId != null && prevPageId != newState.pageId) {
             // Find the element that was clicked/acted upon
-            val elementId = record.params["target"]?.let { target ->
-                // Create element ID from target
-                KnowledgeGraph.makeElementId(prevPageId, "unknown", target)
-            } ?: "${prevPageId}::unknown"
+            val elementId =
+                record.params["target"]?.let { target ->
+                    // Create element ID from target
+                    KnowledgeGraph.makeElementId(prevPageId, "unknown", target)
+                } ?: "$prevPageId::unknown"
 
             graph.addTransition(
                 fromPage = prevPageId,
                 elementId = elementId,
                 action = record.actionType,
                 toPage = newState.pageId,
-                params = record.params
+                params = record.params,
             )
         }
 
@@ -495,14 +517,15 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
         val reasoning = lines.take(3).joinToString(" ").trim()
 
         // Look for action keywords
-        val action = when {
-            response.contains("complete", ignoreCase = true) -> "complete"
-            response.contains("fail", ignoreCase = true) -> "fail"
-            response.contains("click", ignoreCase = true) -> "click"
-            response.contains("type", ignoreCase = true) -> "type"
-            response.contains("press", ignoreCase = true) -> "press_key"
-            else -> "observe"
-        }
+        val action =
+            when {
+                response.contains("complete", ignoreCase = true) -> "complete"
+                response.contains("fail", ignoreCase = true) -> "fail"
+                response.contains("click", ignoreCase = true) -> "click"
+                response.contains("type", ignoreCase = true) -> "type"
+                response.contains("press", ignoreCase = true) -> "press_key"
+                else -> "observe"
+            }
 
         // Simple param extraction
         val params = mutableMapOf<String, String>()
@@ -529,6 +552,6 @@ Provide your response as JSON with "reasoning" and "decision" fields."""
      */
     data class Decision(
         val action: String,
-        val params: Map<String, String> = emptyMap()
+        val params: Map<String, String> = emptyMap(),
     )
 }

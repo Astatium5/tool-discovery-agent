@@ -14,34 +14,46 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class PageNode(
-    val id: String,          // e.g. "editor_idle", "context_menu"
+    val id: String, // e.g. "editor_idle", "context_menu"
     val description: String,
-    var visitCount: Int = 0
+    var visitCount: Int = 0,
 )
 
 @Serializable
 data class ElementNode(
-    val id: String,          // f"{page_id}::{cls}::{label}"
+    val id: String, // f"{page_id}::{cls}::{label}"
     val pageId: String,
     val cls: String,
     val label: String,
     val xpath: String,
-    val role: String
+    val role: String,
 )
 
 @Serializable
 data class Transition(
     val fromPage: String,
     val elementId: String,
-    val action: String,      // "click", "type", "press_key"
+    val action: String, // "click", "type", "press_key"
     val toPage: String,
-    val params: Map<String, String> = emptyMap()
+    val params: Map<String, String> = emptyMap(),
 )
 
 @Serializable
 data class Shortcut(
-    val name: String,                      // e.g. "rename_symbol"
-    val steps: List<Map<String, String>>,  // ordered list of {action, element_id/xpath, params}
+    val name: String, // e.g. "rename_symbol"
+    val steps: List<Map<String, String>>, // ordered list of {action, element_id/xpath, params}
     var usageCount: Int = 0,
-    var successCount: Int = 0
+    var successCount: Int = 0,
+)
+
+/**
+ * Serialized format for knowledge graph persistence.
+ * All fields use concrete types for kotlinx.serialization.
+ */
+@Serializable
+data class SerializedGraph(
+    val pages: List<PageNode>,
+    val elements: List<ElementNode>,
+    val transitions: List<Transition>,
+    val shortcuts: List<Shortcut>,
 )

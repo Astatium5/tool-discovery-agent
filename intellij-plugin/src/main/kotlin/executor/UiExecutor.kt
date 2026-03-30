@@ -29,12 +29,44 @@ class UiExecutor(
 
     init {
         // Ensure IntelliJ has focus on startup
-        bringIntelliJToFront()
+        bringTestIdeToFront()
+    }
+
+    /**
+     * Bring the test IDE (QuestDB) to the front on macOS using AppleScript.
+     * The test IDE runs as process "java" with window title "questdb".
+     * This is needed because java.awt.Robot keyboard events go to the focused application.
+     */
+    fun bringTestIdeToFront() {
+        try {
+            // Check if running on macOS
+            val osName = System.getProperty("os.name").lowercase()
+            if (!osName.contains("mac")) {
+                return // Not macOS, skip
+            }
+
+            // Use AppleScript to bring the java process (QuestDB test IDE) to front
+            val script = """
+                tell application "System Events"
+                    set frontmost of the first process whose name is "java" to true
+                end tell
+                tell application "System Events" to tell process "java"
+                    perform action "AXRaise" of window 1
+                end tell
+            """.trimIndent()
+
+            val processBuilder = ProcessBuilder("osascript", "-e", script)
+            processBuilder.start().waitFor()
+            Thread.sleep(500) // Wait for window to come to front
+            println("  [FOCUS] Brought QuestDB test IDE to front using AppleScript")
+        } catch (e: Exception) {
+            println("  [WARNING] Could not bring test IDE to front: ${e.message}")
+        }
     }
 
     /**
      * Bring IntelliJ IDEA to the front on macOS using AppleScript.
-     * This is needed because java.awt.Robot keyboard events go to the focused application.
+     * This is a generic method for any IntelliJ window.
      */
     private fun bringIntelliJToFront() {
         try {
@@ -482,8 +514,8 @@ class UiExecutor(
     }
 
     /**
-     * Send a keystroke to IntelliJ using AppleScript on macOS.
-     * This ensures keystrokes go to IntelliJ even when running from terminal inside IntelliJ.
+     * Send a keystroke to the test IDE (java process/QuestDB) using AppleScript on macOS.
+     * This ensures keystrokes go to the test IDE even when running from terminal.
      */
     private fun sendKeystrokeToIntelliJ(keyName: String, modifiers: List<String> = emptyList()) {
         try {
@@ -493,9 +525,10 @@ class UiExecutor(
                 ""
             }
 
+            // Target the java process (QuestDB test IDE) instead of "IntelliJ IDEA"
             val script = """
                 tell application "System Events"
-                    tell process "IntelliJ IDEA"
+                    tell process "java"
                         keystroke "$keyName" $modifierClause
                     end tell
                 end tell
@@ -503,7 +536,7 @@ class UiExecutor(
 
             val processBuilder = ProcessBuilder("osascript", "-e", script)
             processBuilder.start().waitFor()
-            println("  [KEYBOARD] Sent '$keyName' to IntelliJ via AppleScript")
+            println("  [KEYBOARD] Sent '$keyName' to QuestDB test IDE via AppleScript")
         } catch (e: Exception) {
             println("  [WARNING] Could not send keystroke via AppleScript: ${e.message}")
             // Fallback to java.awt.Robot
@@ -716,15 +749,15 @@ class UiExecutor(
      * Types text at the current cursor position.
      */
     fun typeText(text: String) {
-        // On macOS, use AppleScript to send keystrokes to IntelliJ specifically
+        // On macOS, use AppleScript to send keystrokes to test IDE (java process) specifically
         val osName = System.getProperty("os.name").lowercase()
         if (osName.contains("mac")) {
             try {
-                // Send each character to IntelliJ
+                // Send each character to the java process (QuestDB test IDE)
                 text.forEach { char ->
                     val script = """
                         tell application "System Events"
-                            tell process "IntelliJ IDEA"
+                            tell process "java"
                                 keystroke "$char"
                             end tell
                         end tell

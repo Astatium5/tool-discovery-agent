@@ -1,0 +1,32 @@
+<idea-plugin>
+    <id>com.tooldiscovery.agent</id>
+    <name>Tool Discovery Agent</name>
+    <vendor url="https://github.com/Astatium5/tool-discovery-agent">Tool Discovery</vendor>
+
+    <description><![CDATA[
+    <p>Tool Discovery Agent for IntelliJ IDEA</p>
+    <p>Discovers and interacts with IDE development tools through GUI perception.</p>
+    <ul>
+        <li>Discover available refactoring and analysis tools</li>
+        <li>Plan and execute automated refactoring operations</li>
+        <li>LLM-powered reasoning and action generation</li>
+    </ul>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+    </extensions>
+
+    <actions>
+        <group id="ToolDiscovery.Actions" text="Tool Discovery" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+
+            <action id="ToolDiscovery.LaunchAgent"
+                    class="execution.LaunchAgentAction"
+                    text="Launch Agent"
+                    description="Start the Tool Discovery Agent"
+                    icon="AllIcons.Actions.Find"/>
+        </group>
+    </actions>
+</idea-plugin>

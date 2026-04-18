@@ -18,7 +18,7 @@ abstract class BaseTest {
     fun verifyIdeIsRunning() {
         try {
             robot.find<ComponentFixture>(
-                byXpath("//div[@class='IdeFrameImpl' or @class='FlatWelcomeFrame']"),
+                byXpath("//div[@class='IdeFrameImpl']"),
                 Duration.ofSeconds(5),
             )
             println("✅ Stage 0 harness: connected to IDE on $robotUrl")
@@ -29,7 +29,7 @@ abstract class BaseTest {
                     e,
                 )
                 false -> IllegalStateException(
-                    "Stage 0 harness failure: IDE at $robotUrl is reachable, but the expected IDE frame/state was not found. Start ./gradlew runIdeForUiTests and open the IDE project before running tests.",
+                    "Stage 0 harness failure: IDE at $robotUrl is reachable, but the expected project window was not found. Start ./gradlew runIdeForUiTests and open the IDE project before running tests.",
                     e,
                 )
             }

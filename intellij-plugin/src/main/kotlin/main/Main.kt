@@ -46,7 +46,7 @@ fun main(args: Array<String>) =
 
         // Get task from command line argument (join all args with spaces)
         val task = args.joinToString(" ")
-        if (task.isNullOrBlank()) {
+        if (task.isBlank()) {
             System.err.println("ERROR: No task specified")
             System.err.println()
             System.err.println("Usage: ./gradlew runGraphAgent --args=\"<task description>\"")
@@ -56,15 +56,12 @@ fun main(args: Array<String>) =
             System.exit(1)
         }
 
-        // Task is guaranteed to be non-null here
-        val nonNullTask: String = task!!
-
         // Print configuration
         println("=== Graph-Enhanced UI Agent ===")
         println("Robot URL: $robotUrl")
         println("LLM Base URL: $llmBaseUrl")
         println("LLM Model: $llmModel")
-        println("Task: $nonNullTask")
+        println("Task: $task")
         println()
 
         try {
@@ -103,13 +100,14 @@ fun main(args: Array<String>) =
                     parser = parser,
                     graphPath = "data/knowledge_graph.json",
                     maxIterations = 30,
+                    telemetry = telemetry,
                 )
 
             println("✓ Components initialized")
             println()
 
             // Execute task
-            val result = agent.execute(nonNullTask)
+            val result = agent.execute(task)
 
             // Print result
             println()
@@ -127,6 +125,12 @@ fun main(args: Array<String>) =
             println("Iterations: ${result.iterations}")
             println("Total Tokens: ${result.tokenCount}")
             println()
+
+            if (result.artifactPaths.isNotEmpty()) {
+                println("Artifacts:")
+                result.artifactPaths.forEach { println("  $it") }
+                println()
+            }
 
             if (result.actionHistory.isNotEmpty()) {
                 println("Action Log:")
@@ -182,7 +186,7 @@ private fun loadEnvVar(
                 }
             }
             if (result != null) {
-                return result!!
+                return result
             }
         }
     } catch (e: Exception) {

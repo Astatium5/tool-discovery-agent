@@ -5,11 +5,14 @@ import graph.telemetry.GraphTelemetry
 import graph.telemetry.GraphTelemetryAttributes
 import graph.telemetry.GraphTelemetryFactory
 import io.opentelemetry.api.common.Attributes
+import io.opentelemetry.api.trace.Span
 import kotlinx.serialization.Serializable
 import llm.LlmClient
 import parser.UiComponent
 import parser.UiTreeParser
 import parser.UiTreeProvider
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * Graph-based UI automation agent implementing the AppAgentX approach.
@@ -25,6 +28,7 @@ class GraphAgent(
     private val graphPath: String = "data/knowledge_graph.json",
     private val maxIterations: Int = 30,
     private val telemetry: GraphTelemetry = GraphTelemetryFactory.create(serviceName = "graph-agent"),
+    private val artifactRootDir: Path = Path.of("build", "reports", "graph-agent"),
 ) {
     constructor(
         executor: UiExecutor,
@@ -33,6 +37,8 @@ class GraphAgent(
         parser: UiTreeParser,
         graphPath: String = "data/knowledge_graph.json",
         maxIterations: Int = 30,
+        telemetry: GraphTelemetry = GraphTelemetryFactory.create(serviceName = "graph-agent"),
+        artifactRootDir: Path = Path.of("build", "reports", "graph-agent"),
     ) : this(
         provider = treeProvider,
         parser = parser,
@@ -40,6 +46,8 @@ class GraphAgent(
         actionHandler = GraphActionExecutorAdapter(executor),
         graphPath = graphPath,
         maxIterations = maxIterations,
+        telemetry = telemetry,
+        artifactRootDir = artifactRootDir,
     )
 
     private val graph = KnowledgeGraph().apply { load(graphPath) }
@@ -48,6 +56,8 @@ class GraphAgent(
     private var iteration: Int = 0
     private val actionHistory: MutableList<ActionRecord> = mutableListOf()
     private var totalTokenCount: Int = 0
+    private val artifactPaths: MutableList<String> = mutableListOf()
+    private var executionArtifactDir: Path? = null
 
     /**
      * Record of a single action taken during task execution.
@@ -74,19 +84,26 @@ class GraphAgent(
         val actionHistory: List<ActionRecord> = emptyList(),
         val tokenCount: Int = 0,
         val iterations: Int = 0,
+        val artifactPaths: List<String> = emptyList(),
     )
 
-    fun execute(task: String): AgentResult =
-        telemetry.rootSpan(
-            name = "graph_agent.execute",
+    fun execute(task: String): AgentResult {
+        val rootSpanName = rootSpanName(task)
+        executionArtifactDir = prepareArtifactDirectory(rootSpanName, task)
+        artifactPaths.clear()
+
+        return telemetry.rootSpan(
+            name = rootSpanName,
             attributes =
                 Attributes.builder()
                     .put(GraphTelemetryAttributes.TASK_ID, task)
+                    .put("artifact.dir", executionArtifactDir?.toString() ?: "")
                     .build(),
         ) {
             println("\n=== GraphAgent Starting ===")
             println("Task: $task")
             println("Graph stats: ${graph.stats()}")
+            executionArtifactDir?.let { println("Artifacts: $it") }
 
             iteration = 0
             actionHistory.clear()
@@ -136,6 +153,7 @@ class GraphAgent(
                         actionHistory = actionHistory.toList(),
                         tokenCount = totalTokenCount,
                         iterations = iteration,
+                        artifactPaths = artifactPaths.toList(),
                     )
                 }
             }
@@ -147,8 +165,10 @@ class GraphAgent(
                 actionHistory = actionHistory.toList(),
                 tokenCount = totalTokenCount,
                 iterations = iteration,
+                artifactPaths = artifactPaths.toList(),
             )
         }
+    }
 
     private fun runIteration(task: String): PageState? {
         val pageState = observe()
@@ -159,7 +179,7 @@ class GraphAgent(
 
         val decisionResult =
             telemetry.childSpan(
-                name = "graph_agent.decision",
+                name = "decide.next_action",
                 attributes = pageAttributes(pageState.pageId),
             ) {
                 decisionEngine.decide(
@@ -187,32 +207,39 @@ class GraphAgent(
 
         actionHistory.add(record)
 
-        when (decision.action) {
-            "complete" -> {
-                persistGraphState()
-                println("✓ Task completed successfully")
-                throw GraphAgentCompletion(
-                    AgentResult(
-                        success = true,
-                        message = "Task completed: $reasoning",
-                        actionHistory = actionHistory.toList(),
-                        tokenCount = totalTokenCount,
-                        iterations = iteration,
-                    ),
-                )
-            }
-            "fail" -> {
-                persistGraphState()
-                println("✗ Task failed: $reasoning")
-                throw GraphAgentCompletion(
-                    AgentResult(
-                        success = false,
-                        message = "Task failed: $reasoning",
-                        actionHistory = actionHistory.toList(),
-                        tokenCount = totalTokenCount,
-                        iterations = iteration,
-                    ),
-                )
+        telemetry.childSpan(
+            name = "completion.check",
+            attributes = pageAttributes(pageState.pageId),
+        ) {
+            when (decision.action) {
+                "complete" -> {
+                    persistGraphState()
+                    println("✓ Task completed successfully")
+                    throw GraphAgentCompletion(
+                        AgentResult(
+                            success = true,
+                            message = "Task completed: $reasoning",
+                            actionHistory = actionHistory.toList(),
+                            tokenCount = totalTokenCount,
+                            iterations = iteration,
+                            artifactPaths = artifactPaths.toList(),
+                        ),
+                    )
+                }
+                "fail" -> {
+                    persistGraphState()
+                    println("✗ Task failed: $reasoning")
+                    throw GraphAgentCompletion(
+                        AgentResult(
+                            success = false,
+                            message = "Task failed: $reasoning",
+                            actionHistory = actionHistory.toList(),
+                            tokenCount = totalTokenCount,
+                            iterations = iteration,
+                            artifactPaths = artifactPaths.toList(),
+                        ),
+                    )
+                }
             }
         }
 
@@ -224,22 +251,47 @@ class GraphAgent(
     /**
      * OBSERVE: Fetch current raw HTML from the provider seam, parse it, and classify the page.
      */
-    private fun observe(): PageState =
-        telemetry.childSpan(name = "graph_agent.observe") {
-            val html = provider.fetchRawHtml()
-            val components = parser.parse(html)
-            val pageState = parser.inferPageState(components, html)
-
-            val firstVisit = graph.getPage(pageState.pageId) == null
-            graph.addPage(PageNode(pageState.pageId, pageState.description))
-            graph.recordVisit(pageState.pageId)
-
-            if (firstVisit) {
-                graph.storeElements(pageState.pageId, pageState.elements)
+    private fun observe(): PageState {
+        val html =
+            telemetry.childSpan(
+                name = "observe.fetch_html",
+                attributes = iterationAttributes(),
+            ) {
+                provider.fetchRawHtml()
             }
 
-            pageState
+        val components =
+            telemetry.childSpan(
+                name = "observe.parse_tree",
+                attributes = iterationAttributes(),
+            ) {
+                parser.parse(html)
+            }
+
+        val pageState =
+            telemetry.childSpan(
+                name = "observe.infer_page_state",
+                attributes = iterationAttributes(),
+            ) {
+                val inferred = parser.inferPageState(components, html)
+                val artifactPath = persistObservedHtml(inferred, html)
+                Span.current().setAttribute(GraphTelemetryAttributes.PAGE_AFTER, inferred.pageId)
+                if (artifactPath.isNotBlank()) {
+                    Span.current().setAttribute("artifact.path", artifactPath)
+                }
+                inferred
+            }
+
+        val firstVisit = graph.getPage(pageState.pageId) == null
+        graph.addPage(PageNode(pageState.pageId, pageState.description))
+        graph.recordVisit(pageState.pageId)
+
+        if (firstVisit) {
+            graph.storeElements(pageState.pageId, pageState.elements)
         }
+
+        return pageState
+    }
 
     private fun persistGraphState() {
         graph.save(graphPath)
@@ -257,16 +309,20 @@ class GraphAgent(
 
         val actionResult =
             telemetry.childSpan(
-                name = "graph_agent.action",
+                name = "act.execute",
                 attributes = actionAttributes(pageState.pageId, decision, targetElement),
             ) {
-                actionHandler.execute(
-                    GraphActionRequest(
-                        decision = decision,
-                        page = pageState,
-                        targetElement = targetElement,
-                    ),
-                )
+                val result =
+                    actionHandler.execute(
+                        GraphActionRequest(
+                            decision = decision,
+                            page = pageState,
+                            targetElement = targetElement,
+                        ),
+                    )
+                Span.current().setAttribute(GraphTelemetryAttributes.SUCCESS, result.success)
+                result.message?.let { Span.current().setAttribute(GraphTelemetryAttributes.EXCEPTION_MESSAGE, it) }
+                result
             }
 
         if (!actionResult.success) {
@@ -293,7 +349,7 @@ class GraphAgent(
         pageBefore: String,
     ): PageState =
         telemetry.childSpan(
-            name = "graph_agent.update_graph",
+            name = "graph.update",
             attributes = pageAttributes(pageBefore),
         ) {
             val record = actionHistory[actionIndex]
@@ -385,7 +441,13 @@ class GraphAgent(
 
     private fun pageAttributes(pageId: String): Attributes =
         Attributes.builder()
+            .put(GraphTelemetryAttributes.ITERATION, iteration.toLong())
             .put(GraphTelemetryAttributes.PAGE_BEFORE, pageId)
+            .build()
+
+    private fun iterationAttributes(): Attributes =
+        Attributes.builder()
+            .put(GraphTelemetryAttributes.ITERATION, iteration.toLong())
             .build()
 
     private fun actionAttributes(
@@ -395,6 +457,7 @@ class GraphAgent(
     ): Attributes {
         val builder =
             Attributes.builder()
+                .put(GraphTelemetryAttributes.ITERATION, iteration.toLong())
                 .put(GraphTelemetryAttributes.PAGE_BEFORE, pageId)
                 .put(GraphTelemetryAttributes.ACTION_TYPE, decision.action)
 
@@ -405,6 +468,49 @@ class GraphAgent(
     }
 
     private fun actionTargetLabel(params: Map<String, String>): String? = params["target"] ?: params["label"]
+
+    private fun rootSpanName(task: String): String {
+        val normalizedTask = task.lowercase()
+        return if (normalizedTask.contains("rename") && normalizedTask.contains("local variable")) {
+            "graph_agent.rename_local_variable"
+        } else {
+            "graph_agent.execute"
+        }
+    }
+
+    private fun prepareArtifactDirectory(
+        rootSpanName: String,
+        task: String,
+    ): Path {
+        val taskSlug =
+            task.lowercase()
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+                .ifBlank { "task" }
+                .take(80)
+        val runDirectory =
+            artifactRootDir
+                .resolve(rootSpanName.replace('.', '/'))
+                .resolve("${System.currentTimeMillis()}-$taskSlug")
+        Files.createDirectories(runDirectory)
+        return runDirectory
+    }
+
+    private fun persistObservedHtml(
+        pageState: PageState,
+        html: String,
+    ): String {
+        val artifactDirectory = executionArtifactDir ?: return ""
+        val fileName =
+            "iteration-${iteration.toString().padStart(2, '0')}-${artifactPaths.size.toString().padStart(2, '0')}-${pageState.pageId}.html"
+        val artifactPath = artifactDirectory.resolve(fileName)
+        Files.writeString(artifactPath, html)
+
+        val normalizedPath = artifactPath.toAbsolutePath().normalize().toString()
+        artifactPaths += normalizedPath
+        println("  [ARTIFACT] Observed HTML snapshot: $normalizedPath")
+        return normalizedPath
+    }
 
     /**
      * Helper to infer role from class name.

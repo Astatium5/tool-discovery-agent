@@ -18,10 +18,18 @@ import profile.UIProfiler
  */
 interface UiTreeProvider {
     /**
+     * Fetch the raw UI tree payload from the source before any parsing.
+     *
+     * This keeps the source format available for page-state inference,
+     * debugging, and fixtures that need to reason about the unparsed HTML.
+     */
+    fun fetchRawHtml(): String
+
+    /**
      * Fetch the current UI tree and return it as a list of parsed [UiComponent] roots.
      *
      * Implementations are responsible for:
-     *  1. Obtaining the raw tree (HTTP, file, native call, …)
+     *  1. Obtaining the raw tree via [fetchRawHtml]
      *  2. Parsing it into the [UiComponent] hierarchy
      *  3. Applying profile-driven pruning via [UiTreeParser.profile] if set
      */

@@ -18,25 +18,22 @@ class HtmlUiTreeProvider(
 ) : UiTreeProvider {
     private val http = HttpClient.newHttpClient()
 
+    override fun fetchRawHtml(): String = http.send(
+        HttpRequest.newBuilder()
+            .uri(URI.create(endpoint))
+            .GET()
+            .build(),
+        HttpResponse.BodyHandlers.ofString(),
+    ).body()
+
     override fun fetchTree(): List<UiComponent> {
-        val html = fetchHtml()
+        val html = fetchRawHtml()
         return UiTreeParser.parse(html)
     }
 
     override fun fetchClassContexts(): Map<String, UIProfiler.ClassContext> {
-        val html = fetchHtml()
+        val html = fetchRawHtml()
         return collectClassContextsFromHtml(html)
-    }
-
-    private fun fetchHtml(): String {
-        val response = http.send(
-            HttpRequest.newBuilder()
-                .uri(URI.create(endpoint))
-                .GET()
-                .build(),
-            HttpResponse.BodyHandlers.ofString(),
-        )
-        return response.body()
     }
 
     companion object {

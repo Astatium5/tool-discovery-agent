@@ -3,6 +3,7 @@ package main
 import com.intellij.remoterobot.RemoteRobot
 import executor.UiExecutor
 import graph.GraphAgent
+import graph.telemetry.GraphTelemetryFactory
 import kotlinx.coroutines.runBlocking
 import llm.LlmClient
 import parser.HtmlUiTreeProvider
@@ -65,6 +66,9 @@ fun main(args: Array<String>) =
         println("LLM Model: $llmModel")
         println("Task: $nonNullTask")
         println()
+
+        val telemetry = GraphTelemetryFactory.create(serviceName = "graph-agent")
+        Runtime.getRuntime().addShutdownHook(Thread { telemetry.close() })
 
         try {
             // Initialize components

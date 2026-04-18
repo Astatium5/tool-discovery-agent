@@ -23,6 +23,8 @@ File(rootDir, ".env").takeIf { it.exists() }?.forEachLine { line ->
 group = "com.tooldiscovery"
 version = "0.1.0"
 
+val openTelemetryVersion = "1.61.0"
+
 repositories {
     mavenCentral()
     intellijPlatform {
@@ -85,8 +87,17 @@ dependencies {
     // Logging
     implementation("org.slf4j:slf4j-simple:2.0.9")
 
+    // OpenTelemetry
+    implementation(platform("io.opentelemetry:opentelemetry-bom:$openTelemetryVersion"))
+    implementation("io.opentelemetry:opentelemetry-api")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-exporter-logging")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+
     // JUnit 5 for tests
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    testImplementation(platform("io.opentelemetry:opentelemetry-bom:$openTelemetryVersion"))
+    testImplementation("io.opentelemetry:opentelemetry-sdk-testing")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

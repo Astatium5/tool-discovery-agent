@@ -61,6 +61,50 @@ class GraphAgentLoopIntegrationTest {
         }
     }
 
+    @Test
+    fun `graph agent preserves first-visit baseline and saves terminal iterations`() {
+        val provider =
+            FakeUiTreeProvider(
+                rawHtmlSequence =
+                    listOf(
+                        editorHtml(buttonLabel = "Refactor"),
+                        editorHtml(buttonLabel = "Rename"),
+                        editorHtml(buttonLabel = "Rename"),
+                    ),
+            )
+        val exporter = InMemorySpanExporter.create()
+        val telemetry = GraphTelemetryFactory.createForTests(exporter)
+        val graphDir = Files.createTempDirectory("graph-agent-terminal")
+        val graphPath = graphDir.resolve("graph.json")
+
+        try {
+            val agent =
+                GraphAgent(
+                    provider = provider,
+                    parser = UiTreeParser,
+                    decisionEngine =
+                        BaselineAssertingDecisionEngine(
+                            expectedStoredLabelsOnSecondVisit = setOf("Refactor", "Editor for Main.kt", "unknown"),
+                        ),
+                    actionHandler = NoopActionHandler(),
+                    graphPath = graphPath.toString(),
+                    maxIterations = 2,
+                    telemetry = telemetry,
+                )
+
+            val result = agent.execute("Detect revisit baseline before completing")
+
+            assertTrue(result.success)
+            assertEquals(2, result.iterations)
+            assertTrue(Files.exists(graphPath))
+            assertTrue(Files.readString(graphPath).contains("editor_idle"))
+        } finally {
+            telemetry.close()
+            Files.deleteIfExists(graphPath)
+            Files.deleteIfExists(graphDir)
+        }
+    }
+
     private class FakeUiTreeProvider(
         private val rawHtmlSequence: List<String>,
     ) : UiTreeProvider {
@@ -134,13 +178,51 @@ class GraphAgentLoopIntegrationTest {
         }
     }
 
+    private class BaselineAssertingDecisionEngine(
+        private val expectedStoredLabelsOnSecondVisit: Set<String>,
+    ) : GraphDecisionEngine {
+        private var calls = 0
+
+        override fun decide(
+            task: String,
+            page: PageState,
+            history: List<GraphAgent.ActionRecord>,
+            graph: KnowledgeGraph,
+            currentPageId: String?,
+        ): GraphDecisionResult {
+            calls++
+
+            return when (calls) {
+                1 -> GraphDecisionResult(
+                    reasoning = "Observe once more",
+                    decision = GraphDecision(action = "observe"),
+                )
+                2 -> {
+                    val storedLabels = graph.getElementsForPage(page.pageId).map { it.label }.toSet()
+                    assertEquals(expectedStoredLabelsOnSecondVisit, storedLabels)
+                    GraphDecisionResult(
+                        reasoning = "Baseline preserved",
+                        decision = GraphDecision(action = "complete"),
+                    )
+                }
+                else -> error("Unexpected decision request #$calls")
+            }
+        }
+    }
+
+    private class NoopActionHandler : GraphActionHandler {
+        override fun execute(request: GraphActionRequest): GraphActionResult = GraphActionResult(success = true)
+    }
+
     private companion object {
-        fun editorHtml(): String =
+        fun editorHtml(
+            buttonLabel: String = "Refactor",
+        ): String =
             """
             <html>
               <body>
                 <div class="IdeFrameImpl">
-                  <div class="ActionButton" accessiblename="Refactor" visible="true" enabled="true"></div>
+                  <div class="ActionButton" accessiblename="$buttonLabel" visible="true" enabled="true"></div>
                   <div class="EditorComponentImpl" accessiblename="Editor for Main.kt" visible="true" enabled="true"></div>
                 </div>
               </body>

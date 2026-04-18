@@ -189,6 +189,7 @@ class GraphAgent(
 
         when (decision.action) {
             "complete" -> {
+                persistGraphState()
                 println("✓ Task completed successfully")
                 throw GraphAgentCompletion(
                     AgentResult(
@@ -201,6 +202,7 @@ class GraphAgent(
                 )
             }
             "fail" -> {
+                persistGraphState()
                 println("✗ Task failed: $reasoning")
                 throw GraphAgentCompletion(
                     AgentResult(
@@ -228,7 +230,7 @@ class GraphAgent(
             val components = parser.parse(html)
             val pageState = parser.inferPageState(components, html)
 
-            val firstVisit = !graph.hasVisitedPage(pageState.pageId)
+            val firstVisit = graph.getPage(pageState.pageId) == null
             graph.addPage(PageNode(pageState.pageId, pageState.description))
             graph.recordVisit(pageState.pageId)
 
@@ -238,6 +240,10 @@ class GraphAgent(
 
             pageState
         }
+
+    private fun persistGraphState() {
+        graph.save(graphPath)
+    }
 
     /**
      * ACT: Execute the decided action using the explicit action seam.
@@ -341,7 +347,7 @@ class GraphAgent(
                 ),
             )
 
-            graph.save(graphPath)
+            persistGraphState()
 
             if (actionHistory.size % 5 == 0 && actionHistory.size >= 10) {
                 val discovered = graph.discoverShortcuts(actionHistory)

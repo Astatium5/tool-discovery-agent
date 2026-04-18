@@ -14,23 +14,23 @@ object GraphTelemetryFactory {
 
     fun create(
         serviceName: String = DEFAULT_SERVICE_NAME,
-    ): GraphTelemetry {
-        val otlpEndpoint = System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")?.takeIf { it.isNotBlank() }
-        val exporter =
-            if (otlpEndpoint == null) {
-                LoggingSpanExporter.create()
-            } else {
-                OtlpGrpcSpanExporter.builder()
-                    .setEndpoint(otlpEndpoint)
-                    .build()
-            }
-        return create(serviceName, exporter)
-    }
+    ): GraphTelemetry = create(serviceName, LoggingSpanExporter.create())
 
     fun createForTests(
         spanExporter: SpanExporter,
         serviceName: String = DEFAULT_SERVICE_NAME,
     ): GraphTelemetry = create(serviceName, spanExporter)
+
+    fun createOtlp(
+        serviceName: String = DEFAULT_SERVICE_NAME,
+        endpoint: String? = null,
+    ): GraphTelemetry {
+        val exporterBuilder = OtlpGrpcSpanExporter.builder()
+        if (!endpoint.isNullOrBlank()) {
+            exporterBuilder.setEndpoint(endpoint)
+        }
+        return create(serviceName, exporterBuilder.build())
+    }
 
     private fun resource(serviceName: String): Resource =
         Resource.getDefault().merge(

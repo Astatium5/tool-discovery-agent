@@ -18,8 +18,13 @@ class GraphTelemetryTest {
         try {
             val spans = exporter.finishedSpanItems
             assertEquals(2, spans.size)
-            assertTrue(spans.any { it.name == "graph_agent.rename_local_variable" })
-            assertTrue(spans.any { it.name == "observe.fetch_html" })
+            val root = spans.single { it.name == "graph_agent.rename_local_variable" }
+            val child = spans.single { it.name == "observe.fetch_html" }
+
+            assertTrue(root.parentSpanContext.isValid.not())
+            assertEquals(root.spanId, child.parentSpanContext.spanId)
+            assertEquals(root.traceId, child.traceId)
+            assertEquals("graph-agent", root.resource.attributes.get(io.opentelemetry.api.common.AttributeKey.stringKey("service.name")))
         } finally {
             telemetry.close()
         }

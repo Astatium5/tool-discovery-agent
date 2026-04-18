@@ -151,9 +151,9 @@ tasks.test {
     // Pass environment variables from .env to tests (fallback to system env)
     val robotUrl = providers.environmentVariable("ROBOT_URL").orNull ?: envProps["ROBOT_URL"] ?: "http://localhost:8082"
     environment("ROBOT_URL", robotUrl)
-    environment("LLM_BASE_URL", providers.environmentVariable("LLM_BASE_URL").orNull ?: envProps["LLM_BASE_URL"] ?: "https://coding-intl.dashscope.aliyuncs.com/v1")
-    environment("LLM_MODEL", providers.environmentVariable("LLM_MODEL").orNull ?: envProps["LLM_MODEL"] ?: "MiniMax-M2.5")
-    environment("LLM_API_KEY", providers.environmentVariable("LLM_API_KEY").orNull ?: envProps["LLM_API_KEY"] ?: "")
+    environment("LLM_BASE_URL", providers.environmentVariable("LLM_BASE_URL").orElse(envProps["LLM_BASE_URL"] ?: "https://coding-intl.dashscope.aliyuncs.com/v1"))
+    environment("LLM_MODEL", providers.environmentVariable("LLM_MODEL").orElse(envProps["LLM_MODEL"] ?: "MiniMax-M2.5"))
+    environment("LLM_API_KEY", providers.environmentVariable("LLM_API_KEY").orElse(envProps["LLM_API_KEY"] ?: ""))
 }
 
 // Remote Robot version for UI testing

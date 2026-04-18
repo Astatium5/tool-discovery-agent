@@ -13,6 +13,9 @@ class HarnessSanityTest : BaseTest() {
 
         val document = executor.getDocumentText()
         check(document != null) { "Expected document text after opening canonical fixture" }
+        check(document.contains("class GraphAgentRenameFixture")) {
+            "Canonical fixture class declaration was not present"
+        }
         check(document.contains("val originalName = \"Ada\"")) {
             "Canonical fixture did not open or contents were unexpected"
         }

@@ -21,7 +21,7 @@ class GraphActionExecutor(
             uiExecutor.moveCaret(originalName)
             uiExecutor.openContextMenu()
             uiExecutor.clickMenuItem("Rename")
-            uiExecutor.typeText(renamedName)
+            uiExecutor.typeInDialog(renamedName)
             uiExecutor.pressKey("enter")
         }.fold(
             onSuccess = {

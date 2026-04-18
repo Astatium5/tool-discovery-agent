@@ -21,5 +21,8 @@ class GraphActionExecutorRenameScriptTest : BaseTest() {
         check(document.contains("val renamedName = \"Ada\"")) {
             "Expected renamed declaration in document, but found:\n$document"
         }
+        check(document.contains("return \"Hello, \$renamedName\"")) {
+            "Expected renamed usage site in document, but found:\n$document"
+        }
     }
 }

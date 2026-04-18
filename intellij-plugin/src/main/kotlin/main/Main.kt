@@ -67,10 +67,10 @@ fun main(args: Array<String>) =
         println("Task: $nonNullTask")
         println()
 
-        val telemetry = GraphTelemetryFactory.create(serviceName = "graph-agent")
-        Runtime.getRuntime().addShutdownHook(Thread { telemetry.close() })
-
         try {
+            val telemetry = GraphTelemetryFactory.create(serviceName = "graph-agent")
+            Runtime.getRuntime().addShutdownHook(Thread { telemetry.close() })
+
             // Initialize components
             println("Initializing components...")
 

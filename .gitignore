@@ -213,6 +213,7 @@ configs/local.yaml
 output/
 logs/
 screenshots/
+.worktrees/
 *.json.bak
 
 # Kotlin

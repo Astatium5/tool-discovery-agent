@@ -7,9 +7,7 @@ import org.junit.jupiter.api.BeforeEach
 import java.time.Duration
 
 abstract class BaseTest {
-    protected val robotUrl = System.getenv("ROBOT_URL")
-        ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-        ?: "http://localhost:8082"
+    protected val robotUrl = System.getenv("ROBOT_URL") ?: "http://localhost:8082"
     protected val robot = RemoteRobot(robotUrl)
     protected val defaultTimeout: Duration = Duration.ofSeconds(10)
 

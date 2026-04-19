@@ -11,6 +11,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
 /**
@@ -192,36 +194,52 @@ class LlmClient(
             name: String,
             default: String,
         ): String {
-            // Check .env file first (before system env which may have Gradle placeholders)
-            val envLocations = listOf(
-                File("../.env"),      // Project root where real .env is
-                File("../../.env"),   // Two levels up
-                File(".env")          // Current directory (may be Gradle-generated)
-            )
-
-            for (envFile in envLocations) {
-                if (envFile.exists()) {
-                    val lines = envFile.readLines()
-                    for (line in lines) {
-                        val trimmed = line.trim()
-                        if (trimmed.startsWith("$name=") && !trimmed.startsWith("#")) {
-                            val value = trimmed.substringAfter("$name=").trim()
-                            if (value.isNotEmpty()) {
-                                return value
-                            }
-                        }
-                    }
-                }
-            }
+            findEnvFileValue(name)?.let { return it }
 
             // Fall back to system environment (may contain Gradle placeholders)
             val sysEnv = System.getenv(name)
-            if (!sysEnv.isNullOrBlank()) {
+            if (!sysEnv.isNullOrBlank() && !looksLikeGradlePlaceholder(sysEnv)) {
                 return sysEnv
             }
 
             // Return default
             return default
         }
+
+        private fun findEnvFileValue(name: String): String? {
+            var currentDir: Path? = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
+            repeat(6) {
+                if (currentDir == null) return null
+                val envFile = currentDir.resolve(".env")
+                if (Files.exists(envFile)) {
+                    val value = readEnvFileValue(envFile.toFile(), name)
+                    if (!value.isNullOrBlank()) {
+                        return value
+                    }
+                }
+                currentDir = currentDir.parent
+            }
+            return null
+        }
+
+        private fun readEnvFileValue(
+            envFile: File,
+            name: String,
+        ): String? {
+            val lines = envFile.readLines()
+            for (line in lines) {
+                val trimmed = line.trim()
+                if (trimmed.startsWith("$name=") && !trimmed.startsWith("#")) {
+                    val value = trimmed.substringAfter("$name=").trim()
+                    if (value.isNotEmpty()) {
+                        return value
+                    }
+                }
+            }
+            return null
+        }
+
+        private fun looksLikeGradlePlaceholder(value: String): Boolean =
+            value.startsWith("or(") || value.contains("EnvironmentVariableValueSource")
     }
 }

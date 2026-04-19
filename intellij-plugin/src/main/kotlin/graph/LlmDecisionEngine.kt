@@ -6,6 +6,8 @@ import llm.LlmClient
 
 class LlmDecisionEngine(
     private val llmClient: LlmClient,
+    private val policy: GraphDecisionPolicy? = null,
+    private val chatCompletion: ((systemPrompt: String, userPrompt: String) -> String)? = null,
 ) : GraphDecisionEngine {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
@@ -18,39 +20,14 @@ class LlmDecisionEngine(
     ): GraphDecisionResult {
         val prompt = buildPrompt(task, page, history, graph, currentPageId)
 
-        val systemPrompt =
-            buildString {
-                appendLine("You are an intelligent UI automation agent for IntelliJ IDEA.")
-                appendLine()
-                appendLine("Your goal is to complete the given task by interacting with the IDE UI.")
-                appendLine()
-                appendLine("Available actions:")
-                appendLine("  - click: Click a UI element by its label")
-                appendLine("  - type: Type text at the current cursor position")
-                appendLine("  - press_key: Press a single key (enter, escape, tab, backspace, f6, etc.)")
-                appendLine("  - press_shortcut: Press a keyboard shortcut (e.g., \"meta shift f6\" for Shift+F6 on Mac)")
-                appendLine("  - open_context_menu: Open right-click context menu")
-                appendLine("  - click_menu_item: Click an item in a context menu")
-                appendLine("  - select_dropdown: Select a value from a dropdown")
-                appendLine("  - click_dialog_button: Click a button in a dialog")
-                appendLine("  - observe: Just observe the current state (no action)")
-                appendLine("  - complete: Task is complete")
-                appendLine("  - fail: Task cannot be completed")
-                appendLine()
-                appendLine("Important notes:")
-                appendLine("  - Use \"meta\" for Command key on Mac (e.g., \"meta shift f6\" for Cmd+Shift+F6)")
-                appendLine("  - Use \"shift_f6\" as a shortcut for rename (more reliable than menu navigation)")
-                appendLine("  - Always check if the task is complete before taking unnecessary actions")
-                appendLine("  - Learn from the graph context to avoid repeating failed actions")
-                appendLine()
-                appendLine("Provide your response as JSON with \"reasoning\" and \"decision\" fields.")
-            }
+        val systemPrompt = buildSystemPrompt()
 
         val response =
-            llmClient.chatStructured(
-                systemPrompt = systemPrompt,
-                userPrompt = prompt,
-            )
+            chatCompletion?.invoke(systemPrompt, prompt)
+                ?: llmClient.chatStructured(
+                    systemPrompt = systemPrompt,
+                    userPrompt = prompt,
+                )
 
         val parsed = parseLlmResponse(response)
         return parsed.copy(tokenCount = response.length)
@@ -106,6 +83,37 @@ class LlmDecisionEngine(
             appendLine("}")
         }
 
+    private fun buildSystemPrompt(): String =
+        buildString {
+            appendLine("You are an intelligent UI automation agent for IntelliJ IDEA.")
+            appendLine()
+            appendLine("Your goal is to complete the given task by interacting with the IDE UI.")
+            appendLine()
+            appendLine("Available actions:")
+
+            val allowedActions = policy?.allowedActions ?: DEFAULT_ACTIONS
+            ACTION_DESCRIPTIONS
+                .filterKeys { it in allowedActions }
+                .forEach { (action, description) ->
+                    appendLine("  - $action: $description")
+                }
+
+            appendLine()
+            appendLine("Important notes:")
+            appendLine("  - Use \"meta\" for Command key on Mac (e.g., \"meta shift f6\" for Cmd+Shift+F6)")
+            appendLine("  - Always check if the task is complete before taking unnecessary actions")
+            appendLine("  - Learn from the graph context to avoid repeating failed actions")
+            policy?.let {
+                appendLine("  - Allowed actions for this policy: ${it.allowedActions.joinToString(", ")}")
+                it.instructions
+                    .lineSequence()
+                    .filter { line -> line.isNotBlank() }
+                    .forEach { line -> appendLine("  - ${line.trim()}") }
+            }
+            appendLine()
+            appendLine("Provide your response as JSON with \"reasoning\" and \"decision\" fields.")
+        }
+
     private fun parseLlmResponse(response: String): GraphDecisionResult {
         try {
             val jsonStart = response.indexOf("{")
@@ -149,8 +157,23 @@ class LlmDecisionEngine(
         val lines = response.lines()
         val reasoning = lines.take(3).joinToString(" ").trim()
 
+        Regex("""<invoke\s+name="([^"]+)"""")
+            .find(response)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { invokeAction ->
+                return GraphDecisionResult(
+                    reasoning = reasoning,
+                    decision = GraphDecision(invokeAction),
+                )
+            }
+
         val action =
             when {
+                response.contains("open_context_menu", ignoreCase = true) -> "open_context_menu"
+                response.contains("click_menu_item", ignoreCase = true) -> "click_menu_item"
+                response.contains("press_key", ignoreCase = true) -> "press_key"
+                response.contains("press_shortcut", ignoreCase = true) -> "press_shortcut"
                 response.contains("complete", ignoreCase = true) -> "complete"
                 response.contains("fail", ignoreCase = true) -> "fail"
                 response.contains("click", ignoreCase = true) -> "click"
@@ -177,5 +200,24 @@ class LlmDecisionEngine(
             reasoning = reasoning,
             decision = GraphDecision(action, params),
         )
+    }
+
+    private companion object {
+        val ACTION_DESCRIPTIONS =
+            linkedMapOf(
+                "click" to "Click a UI element by its label",
+                "type" to "Type text at the current cursor position",
+                "press_key" to "Press a single key (enter, escape, tab, backspace, f6, etc.)",
+                "press_shortcut" to "Press a keyboard shortcut (e.g., \"meta shift f6\" for Shift+F6 on Mac)",
+                "open_context_menu" to "Open right-click context menu",
+                "click_menu_item" to "Click an item in a context menu",
+                "select_dropdown" to "Select a value from a dropdown",
+                "click_dialog_button" to "Click a button in a dialog",
+                "observe" to "Just observe the current state (no action)",
+                "complete" to "Task is complete",
+                "fail" to "Task cannot be completed",
+            )
+
+        val DEFAULT_ACTIONS = ACTION_DESCRIPTIONS.keys
     }
 }

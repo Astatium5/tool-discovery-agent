@@ -25,7 +25,7 @@ class GraphAgentRenameE2ETest : BaseTest() {
     @DisplayName("Stage 5 - GraphAgent completes the canonical rename flow with traces and artifacts")
     fun canonicalRenameFlowEmitsTracesAndArtifacts() {
         val executor = UiExecutor(robot)
-        executor.openFile("src/test/kotlin/fixtures/GraphAgentRenameFixture.kt")
+        openFreshCanonicalRenameFixture(executor)
 
         val documentBefore = executor.getDocumentText()
         check(documentBefore != null) { "Expected document text after opening canonical fixture" }
@@ -94,7 +94,8 @@ class GraphAgentRenameE2ETest : BaseTest() {
                         decision = GraphDecision(action = "open_context_menu"),
                     )
 
-                history.lastOrNull()?.actionType == "open_context_menu" && page.pageId == "context_menu" ->
+                history.lastOrNull()?.actionType == "open_context_menu" &&
+                    page.pageId in setOf("context_menu", "refactor_submenu") ->
                     GraphDecisionResult(
                         reasoning = "Choose Rename from the context menu.",
                         decision = GraphDecision(action = "click_menu_item", params = mapOf("label" to "Rename")),

@@ -125,7 +125,7 @@ object UiTreeParser {
         return if (p != null) {
             ComponentRole.isDialogInteractive(p.roleOf(cls))
         } else {
-            cls in setOf("ActionMenuItem", "ActionMenu", "JButton", "EditorComponentImpl", "JCheckBox", "ComboBox")
+            cls in setOf("ActionMenuItem", "ActionMenu", "JButton", "EditorComponentImpl", "JCheckBox", "ComboBox", "LookupList", "ActionButton")
         }
     }
 
@@ -308,13 +308,14 @@ object UiTreeParser {
         }
 
         if (heavyWeightWindows.isNotEmpty()) {
-            val hasTextField = heavyWeightWindows.any { window ->
+            val hasInlineRenameWidget = heavyWeightWindows.any { window ->
                 flatten(listOf(window)).any {
                     it.cls.contains("TextField", ignoreCase = true) ||
-                        it.cls.contains("ComboBox", ignoreCase = true)
+                        it.cls.contains("ComboBox", ignoreCase = true) ||
+                        it.cls.contains("Lookup", ignoreCase = true)
                 }
             }
-            if (hasTextField) {
+            if (hasInlineRenameWidget) {
                 val interactiveElements = allComponents.filter { isDialogInteractive(it.cls) }
                 return PageState(
                     pageId = "inline_widget",

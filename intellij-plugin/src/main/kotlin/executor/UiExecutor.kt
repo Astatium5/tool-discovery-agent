@@ -316,28 +316,47 @@ class UiExecutor(
     }
 
     fun clickMenuItem(label: String) {
-        val item = try {
+        val item = findMenuItem(label) ?: openRefactorSubmenuAndFind(label)
+            ?: throw IllegalStateException("Could not find menu item '$label' in the active popup flow")
+        val coords = getComponentScreenCenter(item)
+        clickAt(coords.x, coords.y)
+        Thread.sleep(600)
+    }
+
+    private fun findMenuItem(label: String): ComponentFixture? =
+        try {
             robot.find<ComponentFixture>(
                 byXpath("(//div[@class='HeavyWeightWindow'])[last()]//div[@class='ActionMenuItem' and contains(@text, '$label')]"),
-                Duration.ofSeconds(5)
+                Duration.ofSeconds(3)
             )
         } catch (_: Exception) {
             try {
                 robot.find<ComponentFixture>(
                     byXpath("(//div[@class='HeavyWeightWindow'])[last()]//div[@class='ActionMenu' and contains(@text, '$label')]"),
-                    Duration.ofSeconds(3)
+                    Duration.ofSeconds(2)
                 )
             } catch (_: Exception) {
-                robot.find<ComponentFixture>(
-                    byXpath("//div[contains(@accessiblename, '$label') and (@class='ActionMenuItem' or @class='ActionMenu')]"),
-                    Duration.ofSeconds(3)
-                )
+                try {
+                    robot.find<ComponentFixture>(
+                        byXpath("//div[contains(@accessiblename, '$label') and (@class='ActionMenuItem' or @class='ActionMenu')]"),
+                        Duration.ofSeconds(2)
+                    )
+                } catch (_: Exception) {
+                    null
+                }
             }
         }
 
-        val coords = getComponentScreenCenter(item)
+    private fun openRefactorSubmenuAndFind(label: String): ComponentFixture? {
+        if (label.equals("Refactor", ignoreCase = true)) {
+            return null
+        }
+
+        val refactorMenu = findMenuItem("Refactor") ?: return null
+        val coords = getComponentScreenCenter(refactorMenu)
         clickAt(coords.x, coords.y)
-        Thread.sleep(600)
+        Thread.sleep(800)
+        return findMenuItem(label)
     }
 
     fun typeInDialog(value: String) {
@@ -858,14 +877,21 @@ class UiExecutor(
     fun openFile(filePath: String) {
         // Track the current file path for context discovery
         currentFilePath = filePath
-        
+
         // Focus the IDE first
         val ideFrame = robot.find<ComponentFixture>(
             byXpath("//div[@class='IdeFrameImpl']"),
-            Duration.ofSeconds(5)
+            Duration.ofSeconds(5),
         )
         ideFrame.click()
         Thread.sleep(200)
+
+        val path = java.nio.file.Path.of(filePath)
+        if (path.isAbsolute && java.nio.file.Files.exists(path)) {
+            openAbsoluteFile(ideFrame, path)
+            Thread.sleep(1000)
+            return
+        }
 
         // Press Cmd+Shift+O to open file dialog
         robot.keyboard {
@@ -885,6 +911,45 @@ class UiExecutor(
         // Press Enter to open
         robot.keyboard { key(KeyEvent.VK_ENTER) }
         Thread.sleep(1000)
+    }
+
+    private fun openAbsoluteFile(
+        ideFrame: ComponentFixture,
+        path: java.nio.file.Path,
+    ) {
+        val escapedPath =
+            path.toAbsolutePath().normalize().toString()
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+
+        val result =
+            ideFrame.callJs<String>(
+                """
+                var status = "ERROR";
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait(new Runnable() {
+                    run: function() {
+                        var ioFile = new java.io.File('$escapedPath');
+                        var virtualFile = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByIoFile(ioFile);
+                        if (virtualFile == null) {
+                            status = "FILE_NOT_FOUND";
+                            return;
+                        }
+
+                        var projects = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects();
+                        if (projects.length === 0) {
+                            status = "NO_PROJECT";
+                            return;
+                        }
+
+                        com.intellij.openapi.fileEditor.FileEditorManager.getInstance(projects[0]).openFile(virtualFile, true);
+                        status = "OK";
+                    }
+                });
+                status;
+                """.trimIndent(),
+            )
+
+        check(result == "OK") { "Could not open absolute file '$path': $result" }
     }
 
     /**
@@ -1272,8 +1337,25 @@ class UiExecutor(
      */
     fun getDocumentText(): String? {
         return try {
-            val editor = findFocusedEditor()
-            editor.callJs("component.getDocument().getText()")
+            val documentText = findFocusedEditor().callJs<String>(
+                """
+                var text = '__NO_EDITOR__';
+                com.intellij.openapi.application.ApplicationManager
+                    .getApplication().invokeAndWait(new Runnable() {
+                        run: function() {
+                            var project = com.intellij.openapi.project.ProjectManager
+                                .getInstance().getOpenProjects()[0];
+                            var editorEx = com.intellij.openapi.fileEditor.FileEditorManager
+                                .getInstance(project).getSelectedTextEditor();
+                            if (editorEx != null) {
+                                text = editorEx.getDocument().getImmutableCharSequence().toString();
+                            }
+                        }
+                    });
+                text;
+                """.trimIndent(),
+            )
+            documentText.takeUnless { it == "__NO_EDITOR__" }
         } catch (e: Exception) {
             println("  Warning: Could not get document text: ${e.message}")
             null

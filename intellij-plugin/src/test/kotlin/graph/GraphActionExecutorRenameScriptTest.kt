@@ -8,7 +8,7 @@ class GraphActionExecutorRenameScriptTest : BaseTest() {
     @Test
     fun `rename script renames the originalName binding`() {
         val uiExecutor = UiExecutor(robot)
-        uiExecutor.openFile("src/test/kotlin/fixtures/GraphAgentRenameFixture.kt")
+        openFreshCanonicalRenameFixture(uiExecutor)
 
         val graphActionExecutor = GraphActionExecutor(uiExecutor)
         val result = graphActionExecutor.renameSymbol("originalName", "renamedName")

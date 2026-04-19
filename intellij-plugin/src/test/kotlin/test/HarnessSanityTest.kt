@@ -9,7 +9,7 @@ class HarnessSanityTest : BaseTest() {
     @DisplayName("Stage 0 - IDE is reachable and canonical fixture can be opened")
     fun canonicalFixtureCanBeOpened() {
         val executor = UiExecutor(robot)
-        executor.openFile("src/test/kotlin/fixtures/GraphAgentRenameFixture.kt")
+        openFreshCanonicalRenameFixture(executor)
 
         val document = executor.getDocumentText()
         check(document != null) { "Expected document text after opening canonical fixture" }

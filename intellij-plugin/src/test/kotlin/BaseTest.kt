@@ -4,15 +4,21 @@ import com.intellij.remoterobot.RemoteRobot
 import com.intellij.remoterobot.fixtures.ComponentFixture
 import com.intellij.remoterobot.search.locators.byXpath
 import org.junit.jupiter.api.BeforeEach
-import java.time.Duration
+import executor.UiExecutor
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.Duration
+import java.util.UUID
 
 abstract class BaseTest {
     protected val robotUrl = System.getenv("ROBOT_URL") ?: "http://localhost:8082"
     protected val robot = RemoteRobot(robotUrl)
     protected val defaultTimeout: Duration = Duration.ofSeconds(10)
+    protected val canonicalRenameFixtureContents: String =
+        Path.of("src/test/kotlin/fixtures/GraphAgentRenameFixture.kt").toAbsolutePath().normalize().toFile().readText()
 
     @BeforeEach
     fun verifyIdeIsRunning() {
@@ -34,6 +40,15 @@ abstract class BaseTest {
                 )
             }
         }
+    }
+
+    protected fun openFreshCanonicalRenameFixture(executor: UiExecutor): String {
+        val tempDir = Path.of("build", "tmp", "graph-agent-fixtures").toAbsolutePath().normalize()
+        Files.createDirectories(tempDir)
+        val fixturePath = tempDir.resolve("GraphAgentRenameFixture-${UUID.randomUUID()}.kt")
+        Files.writeString(fixturePath, canonicalRenameFixtureContents)
+        executor.openFile(fixturePath.toString())
+        return fixturePath.toString()
     }
 
     private fun Throwable.hasNetworkCause(): Boolean {

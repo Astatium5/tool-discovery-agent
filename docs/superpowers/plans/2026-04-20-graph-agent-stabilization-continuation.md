@@ -234,7 +234,7 @@ The next immediate objective is not a new feature. It is repeated success.
   - failure seam
   - artifact directory
 - [x] Write a small reliability summary doc or test report under `docs/superpowers/plans` or `build/reports`
-- [ ] If flakiness appears, classify it before fixing anything
+- [x] If flakiness appears, classify it before fixing anything
 
 Latest result on 2026-04-20:
 - `10/10` constrained LLM rename runs passed
@@ -268,14 +268,20 @@ Success criterion:
 
 ### Phase C: Strengthen Policy And Decision Observability
 
-- [ ] Add explicit telemetry around LLM invocation inside `LlmDecisionEngine`
-- [ ] Consider adding spans such as:
+- [x] Add explicit telemetry around LLM invocation inside `LlmDecisionEngine`
+- [x] Consider adding spans such as:
   - `decide.build_prompt`
   - `decide.llm_call`
   - `decide.parse_response`
-- [ ] Persist the final effective policy instructions per run as an artifact
-- [ ] Persist the raw LLM response per run where safe and practical
-- [ ] Add assertions for those spans/artifacts in the constrained LLM E2E
+- [x] Persist the final effective policy instructions per run as an artifact
+- [x] Persist the raw LLM response per run where safe and practical
+- [x] Add assertions for those spans/artifacts in the constrained LLM E2E
+
+Latest result on 2026-04-20:
+- `LlmDecisionEngine` now emits dedicated `decide.build_prompt`, `decide.llm_call`, and `decide.parse_response` spans under the existing `decide.next_action` span
+- constrained runs now persist per-decision `decision-XX-effective-policy.txt` and `decision-XX-raw-response.txt` artifacts alongside the existing observed HTML snapshots
+- `GraphAgentRenameConstrainedLlmE2ETest` now asserts the dedicated spans and artifact files in the live IDE-backed constrained rename flow
+- verification passed for `graph.LlmDecisionEnginePolicyTest` in `8s`, `test.GraphAgentRenameConstrainedLlmE2ETest --rerun-tasks` in `1m 19s`, and `test.GraphAgentRenameConstrainedLlmFixtureMatrixE2ETest --rerun-tasks` in `4m 8s`
 
 Success criterion:
 - every constrained LLM failure can be attributed to prompt, model output, parse, policy validation, or execution
@@ -284,15 +290,31 @@ Success criterion:
 
 Only do this after Phase A and B are green.
 
-- [ ] Decide whether the next widening is:
+- [x] Decide whether the next widening is:
   - more rename fixtures, or
   - a slightly broader action surface
-- [ ] If widening action surface, do it minimally
+- [x] If widening action surface, do it minimally
 - [ ] Good candidates:
   - allow one additional preparatory action only if justified by live evidence
   - allow very limited fallback action sequences for popup variants
-- [ ] Keep the policy wrapper in place
-- [ ] Update tests first, then runtime
+- [x] Keep the policy wrapper in place
+- [x] Update tests first, then runtime
+
+Latest result on 2026-04-20:
+- live evidence justified a minimal action-surface widening instead of more rename-only fixtures first
+- rename-only fixture coverage now also includes a `captured-by-local-function` case to keep widening pressure on symbol-update semantics
+- deterministic Stage 5 rename runs exposed a one-loop `editor_idle` gap immediately after `click_menu_item(Rename)` on existing Phase B fixtures before the inline rename widget appeared
+- constrained LLM runs exposed two additional attributable seams:
+  - missing completion hint after `press_key(ENTER)` returned the editor to `editor_idle`, leading the model to ask for an unnecessary `observe`
+  - malformed JSON responses with trailing wrapper noise, which fell into text fallback and were misclassified
+- the rename policy now allows `observe` only in one context: immediately after `click_menu_item` when the page is still `editor_idle`
+- the policy prompt now tells the model to `complete` immediately once `press_key(ENTER)` has returned the editor to idle
+- `LlmDecisionEngine` now extracts the first balanced JSON object from raw responses, recovering valid decisions even when the model appends trailing wrapper characters
+- verification passed for:
+  - `./gradlew test --tests graph.PolicyConstrainedDecisionEngineTest --tests graph.LlmDecisionEnginePolicyTest` in `6s`
+  - `./gradlew test --tests test.GraphAgentRenameFixtureMatrixE2ETest --rerun-tasks` in `2m 28s`
+  - `./gradlew test --tests test.GraphAgentRenameConstrainedLlmFixtureMatrixE2ETest --rerun-tasks` in `5m 58s`
+  - `./gradlew test --tests test.GraphAgentRenameConstrainedLlmE2ETest --rerun-tasks` in `1m 25s`
 
 Success criterion:
 - autonomy increases without losing failure localization
@@ -342,9 +364,11 @@ This section is meant to be updated directly by future agents.
 
 - [x] Root and iteration telemetry
 - [x] HTML artifact capture
-- [ ] Dedicated `decide.llm_call` span
-- [ ] Dedicated raw-response artifact
-- [ ] Dedicated effective-policy artifact
+- [x] Dedicated `decide.build_prompt` span
+- [x] Dedicated `decide.llm_call` span
+- [x] Dedicated `decide.parse_response` span
+- [x] Dedicated raw-response artifact
+- [x] Dedicated effective-policy artifact
 
 ### Policy Work
 
@@ -352,7 +376,7 @@ This section is meant to be updated directly by future agents.
 - [x] Policy-aware LLM prompt
 - [x] MiniMax tool-call parsing
 - [x] Repeat-run evidence that the current rename policy is stable
-- [ ] Decide whether any minimal policy widening is necessary
+- [x] Decide whether any minimal policy widening is necessary
 
 ### Expansion
 

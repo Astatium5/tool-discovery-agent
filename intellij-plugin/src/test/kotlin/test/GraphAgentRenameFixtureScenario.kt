@@ -209,6 +209,46 @@ data class GraphAgentRenameFixtureScenario(
                     ),
             )
 
+        val capturedByLocalFunction =
+            GraphAgentRenameFixtureScenario(
+                id = "captured-by-local-function",
+                fileStem = "GraphAgentRenameCapturedLocalFunctionFixture",
+                contents =
+                    """
+                    package fixtures
+
+                    class GraphAgentRenameCapturedLocalFunctionFixture {
+                        fun renderGreeting(): String {
+                            val originalName = "Ada"
+
+                            fun decorated(): String {
+                                return originalName.uppercase()
+                            }
+
+                            return decorated() + ":" + originalName
+                        }
+                    }
+                    """.trimIndent(),
+                requiredBefore =
+                    listOf(
+                        "val originalName = \"Ada\"",
+                        "return originalName.uppercase()",
+                        "return decorated() + \":\" + originalName",
+                    ),
+                requiredAfter =
+                    listOf(
+                        "val renamedName = \"Ada\"",
+                        "return renamedName.uppercase()",
+                        "return decorated() + \":\" + renamedName",
+                    ),
+                forbiddenAfter =
+                    listOf(
+                        "val originalName = \"Ada\"",
+                        "return originalName.uppercase()",
+                        "return decorated() + \":\" + originalName",
+                    ),
+            )
+
         val phaseB: List<GraphAgentRenameFixtureScenario> =
             listOf(
                 multipleLocalVariables,
@@ -216,5 +256,7 @@ data class GraphAgentRenameFixtureScenario(
                 usageSiteVerification,
                 noisyEditorState,
             )
+
+        val phaseD: List<GraphAgentRenameFixtureScenario> = phaseB + capturedByLocalFunction
     }
 }

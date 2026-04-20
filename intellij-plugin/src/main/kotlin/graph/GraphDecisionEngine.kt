@@ -1,5 +1,8 @@
 package graph
 
+import graph.telemetry.GraphTelemetry
+import java.nio.file.Path
+
 data class GraphDecision(
     val action: String,
     val params: Map<String, String> = emptyMap(),
@@ -19,4 +22,11 @@ interface GraphDecisionEngine {
         graph: KnowledgeGraph,
         currentPageId: String?,
     ): GraphDecisionResult
+}
+
+interface GraphDecisionEngineRuntimeContextAware {
+    fun attachRuntimeContext(
+        telemetry: GraphTelemetry,
+        artifactDirectoryProvider: () -> Path?,
+    )
 }

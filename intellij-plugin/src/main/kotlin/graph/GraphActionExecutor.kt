@@ -18,6 +18,7 @@ class GraphActionExecutor(
 
     fun renameSymbol(originalName: String, renamedName: String): RenameScriptResult {
         return runCatching {
+            uiExecutor.focusEditor()
             uiExecutor.moveCaret(originalName)
             uiExecutor.openContextMenu()
             uiExecutor.clickMenuItem("Rename")

@@ -59,6 +59,12 @@ class GraphAgent(
     private val artifactPaths: MutableList<String> = mutableListOf()
     private var executionArtifactDir: Path? = null
 
+    init {
+        if (decisionEngine is GraphDecisionEngineRuntimeContextAware) {
+            decisionEngine.attachRuntimeContext(telemetry) { executionArtifactDir }
+        }
+    }
+
     /**
      * Record of a single action taken during task execution.
      * Tracks the action, parameters, page transitions, reasoning, and success status.

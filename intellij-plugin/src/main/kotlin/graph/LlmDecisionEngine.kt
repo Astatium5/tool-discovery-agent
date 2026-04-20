@@ -1,15 +1,30 @@
 package graph
 
+import graph.telemetry.GraphTelemetry
+import io.opentelemetry.api.trace.Span
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import llm.LlmClient
+import java.nio.file.Files
+import java.nio.file.Path
 
 class LlmDecisionEngine(
     private val llmClient: LlmClient,
     private val policy: GraphDecisionPolicy? = null,
     private val chatCompletion: ((systemPrompt: String, userPrompt: String) -> String)? = null,
-) : GraphDecisionEngine {
+) : GraphDecisionEngine, GraphDecisionEngineRuntimeContextAware {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+    private var telemetry: GraphTelemetry? = null
+    private var artifactDirectoryProvider: (() -> Path?)? = null
+    private var decisionSequence: Int = 0
+
+    override fun attachRuntimeContext(
+        telemetry: GraphTelemetry,
+        artifactDirectoryProvider: () -> Path?,
+    ) {
+        this.telemetry = telemetry
+        this.artifactDirectoryProvider = artifactDirectoryProvider
+    }
 
     override fun decide(
         task: String,
@@ -18,18 +33,44 @@ class LlmDecisionEngine(
         graph: KnowledgeGraph,
         currentPageId: String?,
     ): GraphDecisionResult {
-        val prompt = buildPrompt(task, page, history, graph, currentPageId)
+        val decisionNumber = nextDecisionSequence()
 
-        val systemPrompt = buildSystemPrompt()
+        val promptContext =
+            trace("decide.build_prompt") {
+                val prompt = buildPrompt(task, page, history, graph, currentPageId)
+                val systemPrompt = buildSystemPrompt()
+                val effectivePolicy = extractEffectivePolicy(task)
+                val effectivePolicyPath =
+                    effectivePolicy?.let { persistArtifact(decisionNumber, "effective-policy", it) }.orEmpty()
+                if (effectivePolicyPath.isNotBlank()) {
+                    Span.current().setAttribute("artifact.path.policy", effectivePolicyPath)
+                }
+                PromptContext(systemPrompt = systemPrompt, userPrompt = prompt)
+            }
 
         val response =
-            chatCompletion?.invoke(systemPrompt, prompt)
-                ?: llmClient.chatStructured(
-                    systemPrompt = systemPrompt,
-                    userPrompt = prompt,
-                )
+            trace("decide.llm_call") {
+                val rawResponse =
+                    chatCompletion?.invoke(promptContext.systemPrompt, promptContext.userPrompt)
+                        ?: llmClient.chatStructured(
+                            systemPrompt = promptContext.systemPrompt,
+                            userPrompt = promptContext.userPrompt,
+                        )
+                Span.current().setAttribute("llm.response.length", rawResponse.length.toLong())
+                val rawResponsePath = persistArtifact(decisionNumber, "raw-response", rawResponse)
+                if (rawResponsePath.isNotBlank()) {
+                    Span.current().setAttribute("artifact.path.raw_response", rawResponsePath)
+                }
+                rawResponse
+            }
 
-        val parsed = parseLlmResponse(response)
+        val parsed =
+            trace("decide.parse_response") {
+                val parsedResponse = parseLlmResponse(response)
+                Span.current().setAttribute("decision.parse_mode", parsedResponse.mode)
+                Span.current().setAttribute("decision.action", parsedResponse.result.decision.action)
+                parsedResponse.result
+            }
         return parsed.copy(tokenCount = response.length)
     }
 
@@ -114,13 +155,11 @@ class LlmDecisionEngine(
             appendLine("Provide your response as JSON with \"reasoning\" and \"decision\" fields.")
         }
 
-    private fun parseLlmResponse(response: String): GraphDecisionResult {
+    private fun parseLlmResponse(response: String): ParsedLlmResponse {
         try {
-            val jsonStart = response.indexOf("{")
-            val jsonEnd = response.lastIndexOf("}")
+            val jsonStr = extractFirstJsonObject(response)
 
-            if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                val jsonStr = response.substring(jsonStart, jsonEnd + 1)
+            if (jsonStr != null) {
                 val jsonElement = json.parseToJsonElement(jsonStr)
 
                 if (jsonElement is JsonObject) {
@@ -139,18 +178,71 @@ class LlmDecisionEngine(
                             }
                         }
 
-                        return GraphDecisionResult(
-                            reasoning = reasoning,
-                            decision = GraphDecision(action, params),
+                        return ParsedLlmResponse(
+                            result =
+                                GraphDecisionResult(
+                                    reasoning = reasoning,
+                                    decision = GraphDecision(action, params),
+                                ),
+                            mode = "json",
                         )
                     }
                 }
             }
         } catch (e: Exception) {
             println("  JSON parsing failed, using text fallback: ${e.message}")
+            Span.current().setAttribute("decision.parse_error", e.message ?: e::class.simpleName ?: "unknown")
         }
 
-        return parseTextFallback(response)
+        return ParsedLlmResponse(
+            result = parseTextFallback(response),
+            mode = "text_fallback",
+        )
+    }
+
+    private fun extractFirstJsonObject(response: String): String? {
+        val start = response.indexOf('{')
+        if (start < 0) {
+            return null
+        }
+
+        var depth = 0
+        var inString = false
+        var escaping = false
+
+        for (index in start until response.length) {
+            val ch = response[index]
+            if (escaping) {
+                escaping = false
+                continue
+            }
+
+            if (ch == '\\' && inString) {
+                escaping = true
+                continue
+            }
+
+            if (ch == '"') {
+                inString = !inString
+                continue
+            }
+
+            if (inString) {
+                continue
+            }
+
+            when (ch) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        return response.substring(start, index + 1)
+                    }
+                }
+            }
+        }
+
+        return null
     }
 
     private fun parseTextFallback(response: String): GraphDecisionResult {
@@ -201,6 +293,55 @@ class LlmDecisionEngine(
             decision = GraphDecision(action, params),
         )
     }
+
+    private fun extractEffectivePolicy(task: String): String? {
+        val policyMarker = "## Execution Policy:"
+        val policyStart = task.indexOf(policyMarker)
+        if (policyStart < 0) {
+            return null
+        }
+
+        val userTaskMarker = "\n## User Task"
+        val policyEnd = task.indexOf(userTaskMarker, policyStart)
+        return if (policyEnd > policyStart) {
+            task.substring(policyStart, policyEnd).trim()
+        } else {
+            task.substring(policyStart).trim()
+        }.ifBlank { null }
+    }
+
+    private fun persistArtifact(
+        decisionNumber: Int,
+        suffix: String,
+        content: String,
+    ): String {
+        val artifactDirectory = artifactDirectoryProvider?.invoke() ?: return ""
+        Files.createDirectories(artifactDirectory)
+        val artifactPath = artifactDirectory.resolve("decision-${decisionNumber.toString().padStart(2, '0')}-$suffix.txt")
+        Files.writeString(artifactPath, content)
+        return artifactPath.toAbsolutePath().normalize().toString()
+    }
+
+    private fun <T> trace(
+        name: String,
+        block: () -> T,
+    ): T = telemetry?.childSpan(name = name, block = block) ?: block()
+
+    @Synchronized
+    private fun nextDecisionSequence(): Int {
+        decisionSequence += 1
+        return decisionSequence
+    }
+
+    private data class PromptContext(
+        val systemPrompt: String,
+        val userPrompt: String,
+    )
+
+    private data class ParsedLlmResponse(
+        val result: GraphDecisionResult,
+        val mode: String,
+    )
 
     private companion object {
         val ACTION_DESCRIPTIONS =

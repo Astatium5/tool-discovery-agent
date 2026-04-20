@@ -12,6 +12,7 @@ import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlin.streams.toList
 import llm.LlmClient
 import org.junit.jupiter.api.Assertions.assertTrue
 import parser.HtmlUiTreeProvider
@@ -26,7 +27,7 @@ internal object GraphAgentRenameConstrainedLlmHarness {
     const val renamedName = "renamedName"
     const val canonicalTask = "rename the local variable originalName to renamedName in the current file"
 
-    private val allowedActionTypes = setOf("open_context_menu", "click_menu_item", "type", "press_key", "complete")
+    private val allowedActionTypes = setOf("open_context_menu", "click_menu_item", "observe", "type", "press_key", "complete")
     private val json = Json { prettyPrint = true }
 
     data class RunExecution(
@@ -132,6 +133,16 @@ internal object GraphAgentRenameConstrainedLlmHarness {
         result.artifactPaths.forEach { artifactPath ->
             assertTrue(Files.exists(Path.of(artifactPath)), "Expected artifact to exist: $artifactPath")
         }
+        val artifactDirectory = Path.of(result.artifactDir)
+        val artifactFileNames = Files.list(artifactDirectory).use { paths -> paths.map { it.fileName.toString() }.toList() }
+        assertTrue(
+            artifactFileNames.any { it.endsWith("-effective-policy.txt") },
+            "Constrained LLM run should persist an effective policy artifact in $artifactDirectory",
+        )
+        assertTrue(
+            artifactFileNames.any { it.endsWith("-raw-response.txt") },
+            "Constrained LLM run should persist a raw response artifact in $artifactDirectory",
+        )
 
         val documentAfter = run.documentAfter
         check(documentAfter != null) { "Expected document text after rename" }
@@ -139,6 +150,9 @@ internal object GraphAgentRenameConstrainedLlmHarness {
 
         assertTrue(run.spanNames.any { it == "graph_agent.rename_local_variable" })
         assertTrue(run.spanNames.any { it == "decide.next_action" })
+        assertTrue(run.spanNames.any { it == "decide.build_prompt" })
+        assertTrue(run.spanNames.any { it == "decide.llm_call" })
+        assertTrue(run.spanNames.any { it == "decide.parse_response" })
         assertTrue(run.spanNames.any { it == "act.execute" })
     }
 

@@ -21,8 +21,8 @@ import java.nio.file.Path
 
 class GraphAgentRenameFixtureMatrixE2ETest : BaseTest() {
     @TestFactory
-    fun `Stage 5 rename flow stays green across Phase B fixtures`(): List<DynamicTest> =
-        GraphAgentRenameFixtureScenario.phaseB.map { fixture ->
+    fun `Stage 5 rename flow stays green across rename-only expansion fixtures`(): List<DynamicTest> =
+        GraphAgentRenameFixtureScenario.phaseD.map { fixture ->
             DynamicTest.dynamicTest(fixture.id) {
                 val executor = UiExecutor(robot)
                 openFreshRenameFixture(executor, fixture)
@@ -101,7 +101,13 @@ class GraphAgentRenameFixtureMatrixE2ETest : BaseTest() {
                         decision = GraphDecision(action = "click_menu_item", params = mapOf("label" to "Rename")),
                     )
 
-                history.lastOrNull()?.actionType == "click_menu_item" && page.pageId == "inline_widget" ->
+                history.lastOrNull()?.actionType == "click_menu_item" && page.pageId == "editor_idle" ->
+                    GraphDecisionResult(
+                        reasoning = "Rename was chosen, but the inline widget has not appeared yet. Observe once more.",
+                        decision = GraphDecision(action = "observe"),
+                    )
+
+                history.lastOrNull()?.actionType in setOf("click_menu_item", "observe") && page.pageId == "inline_widget" ->
                     GraphDecisionResult(
                         reasoning = "Type the replacement name into the inline rename widget.",
                         decision = GraphDecision(action = "type", params = mapOf("text" to renamedName)),
@@ -117,6 +123,12 @@ class GraphAgentRenameFixtureMatrixE2ETest : BaseTest() {
                     GraphDecisionResult(
                         reasoning = "The editor returned to idle after the rename.",
                         decision = GraphDecision(action = "complete"),
+                    )
+
+                history.lastOrNull()?.actionType == "observe" && page.pageId == "editor_idle" ->
+                    GraphDecisionResult(
+                        reasoning = "The inline rename widget did not appear after the one allowed observe retry.",
+                        decision = GraphDecision(action = "fail"),
                     )
 
                 else ->

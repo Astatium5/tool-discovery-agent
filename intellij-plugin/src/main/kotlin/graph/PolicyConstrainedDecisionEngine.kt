@@ -8,6 +8,7 @@ data class GraphDecisionPolicy(
     val allowedKeys: Set<String> = emptySet(),
     val expectedTypeText: String? = null,
     val contextualHints: (PageState, List<GraphAgent.ActionRecord>) -> List<String> = { _, _ -> emptyList() },
+    val contextualValidator: (GraphDecision, PageState, List<GraphAgent.ActionRecord>) -> String? = { _, _, _ -> null },
 ) {
     fun applyToTask(
         task: String,
@@ -37,7 +38,11 @@ data class GraphDecisionPolicy(
             append(task)
         }
 
-    fun validate(decision: GraphDecision): String? {
+    fun validate(
+        decision: GraphDecision,
+        page: PageState,
+        history: List<GraphAgent.ActionRecord>,
+    ): String? {
         if (decision.action !in allowedActions) {
             return "Action '${decision.action}' is not allowed by policy '$name'"
         }
@@ -63,7 +68,7 @@ data class GraphDecisionPolicy(
             }
         }
 
-        return null
+        return contextualValidator(decision, page, history)
     }
 }
 
@@ -76,9 +81,10 @@ object GraphDecisionPolicies {
                 Use IntelliJ's right-click Rename action for this task.
                 Do not use keyboard shortcuts, global search, or unrelated refactor actions.
                 Open the context menu on the selected symbol, choose Rename, type the replacement text, then confirm with Enter.
+                If Rename was chosen but the inline widget has not appeared yet, use observe exactly once and re-check.
                 If the task is already complete, respond with complete.
                 """.trimIndent(),
-            allowedActions = setOf("open_context_menu", "click_menu_item", "type", "press_key", "complete", "fail"),
+            allowedActions = setOf("open_context_menu", "click_menu_item", "observe", "type", "press_key", "complete", "fail"),
             allowedMenuLabels = setOf("Rename"),
             allowedKeys = setOf("ENTER", "ESCAPE"),
             expectedTypeText = expectedReplacementText,
@@ -95,13 +101,34 @@ object GraphDecisionPolicies {
                         page.pageId in setOf("context_menu", "refactor_submenu") ->
                         listOf("The Rename option is the only valid menu target from this popup.", "Use click_menu_item with label Rename.")
 
+                    history.lastOrNull()?.actionType == "click_menu_item" && page.pageId == "editor_idle" ->
+                        listOf(
+                            "Rename was chosen, but the inline rename widget is not visible yet.",
+                            "Use observe exactly once, then look for the inline widget again.",
+                        )
+
                     page.pageId == "inline_widget" && history.none { it.actionType == "type" } ->
                         listOf("The inline rename widget is already open.", "Type exactly $expectedReplacementText.")
 
                     page.pageId == "inline_widget" && history.lastOrNull()?.actionType == "type" ->
                         listOf("The replacement text has already been entered.", "Confirm the rename with press_key ENTER.")
 
+                    history.lastOrNull()?.actionType == "press_key" && page.pageId == "editor_idle" ->
+                        listOf(
+                            "The rename has already been confirmed.",
+                            "Use complete now. Do not observe again.",
+                        )
+
                     else -> emptyList()
+                }
+            },
+            contextualValidator = { decision, page, history ->
+                if (decision.action != "observe") {
+                    null
+                } else if (history.lastOrNull()?.actionType == "click_menu_item" && page.pageId == "editor_idle") {
+                    null
+                } else {
+                    "Action 'observe' is only allowed exactly once immediately after click_menu_item when the page is still editor_idle"
                 }
             },
         )
@@ -110,7 +137,7 @@ object GraphDecisionPolicies {
 class PolicyConstrainedDecisionEngine(
     private val delegate: GraphDecisionEngine,
     private val policy: GraphDecisionPolicy,
-) : GraphDecisionEngine {
+) : GraphDecisionEngine, GraphDecisionEngineRuntimeContextAware {
     override fun decide(
         task: String,
         page: PageState,
@@ -120,7 +147,7 @@ class PolicyConstrainedDecisionEngine(
     ): GraphDecisionResult {
         val delegatedTask = policy.applyToTask(task, page, history)
         val result = delegate.decide(delegatedTask, page, history, graph, currentPageId)
-        val violation = policy.validate(result.decision) ?: return result
+        val violation = policy.validate(result.decision, page, history) ?: return result
 
         return GraphDecisionResult(
             reasoning =
@@ -135,5 +162,14 @@ class PolicyConstrainedDecisionEngine(
             decision = GraphDecision(action = "fail", params = mapOf("policy" to policy.name)),
             tokenCount = result.tokenCount,
         )
+    }
+
+    override fun attachRuntimeContext(
+        telemetry: graph.telemetry.GraphTelemetry,
+        artifactDirectoryProvider: () -> java.nio.file.Path?,
+    ) {
+        if (delegate is GraphDecisionEngineRuntimeContextAware) {
+            delegate.attachRuntimeContext(telemetry, artifactDirectoryProvider)
+        }
     }
 }

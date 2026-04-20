@@ -225,16 +225,23 @@ This is the current frontier. The next work is about reliability and controlled 
 
 The next immediate objective is not a new feature. It is repeated success.
 
-- [ ] Add a repeat-run harness for `test.GraphAgentRenameConstrainedLlmE2ETest`
-- [ ] Run the constrained LLM rename flow at least 10 times
-- [ ] Capture per-run outcome:
+- [x] Add a repeat-run harness for `test.GraphAgentRenameConstrainedLlmE2ETest`
+- [x] Run the constrained LLM rename flow at least 10 times
+- [x] Capture per-run outcome:
   - pass/fail
   - iteration count
   - action history
   - failure seam
   - artifact directory
-- [ ] Write a small reliability summary doc or test report under `docs/superpowers/plans` or `build/reports`
+- [x] Write a small reliability summary doc or test report under `docs/superpowers/plans` or `build/reports`
 - [ ] If flakiness appears, classify it before fixing anything
+
+Latest result on 2026-04-20:
+- `10/10` constrained LLM rename runs passed
+- every run completed in `5` iterations with failure seam `none`
+- report written to `intellij-plugin/build/reports/graph-agent/reliability/rename-constrained-llm-reliability.md`
+- JSON detail written to `intellij-plugin/build/reports/graph-agent/reliability/rename-constrained-llm-reliability.json`
+- total token count across all runs: `24391` (`~2439` per run)
 
 Success criterion:
 - the constrained LLM rename path should pass repeatedly without widening policy
@@ -243,12 +250,18 @@ Success criterion:
 
 Once repeated runs on the base fixture are stable, broaden the fixture space while keeping the same policy fence.
 
-- [ ] Add fixture: multiple local variables in the same function
-- [ ] Add fixture: variables with similar names (`originalName`, `originalNameSuffix`)
-- [ ] Add fixture: usage-site pattern that could confuse completion/rename verification
-- [ ] Add fixture: file with extra editor noise but same local rename task
-- [ ] Add deterministic GraphAgent E2Es for each fixture
-- [ ] Add constrained LLM E2Es for each fixture
+- [x] Add fixture: multiple local variables in the same function
+- [x] Add fixture: variables with similar names (`originalName`, `originalNameSuffix`)
+- [x] Add fixture: usage-site pattern that could confuse completion/rename verification
+- [x] Add fixture: file with extra editor noise but same local rename task
+- [x] Add deterministic GraphAgent E2Es for each fixture
+- [x] Add constrained LLM E2Es for each fixture
+
+Latest result on 2026-04-20:
+- deterministic GraphAgent rename passed across `4/4` Phase B fixtures
+- constrained LLM rename passed across `4/4` Phase B fixtures under the same rename-only policy fence
+- fixture-aware verification now checks symbol-specific before/after expectations instead of assuming every `originalName` substring disappears globally
+- regression batch passed for canonical deterministic, canonical constrained LLM, `GRAPH_AGENT_RELIABILITY_RUNS=2` reliability, and both new Phase B fixture matrices
 
 Success criterion:
 - rename remains reliable across a small family of structurally different local-variable cases
@@ -314,16 +327,16 @@ This section is meant to be updated directly by future agents.
 - [x] Stabilize scripted rename executor
 - [x] Stabilize deterministic GraphAgent rename E2E
 - [x] Stabilize constrained LLM rename E2E
-- [ ] Measure repeat-run reliability for constrained LLM rename
-- [ ] Document repeat-run reliability results
+- [x] Measure repeat-run reliability for constrained LLM rename
+- [x] Document repeat-run reliability results
 
 ### Fixture Coverage
 
 - [x] Base rename fixture
-- [ ] Multi-local-variable fixture
-- [ ] Similar-name collision fixture
-- [ ] Noisy editor-state fixture
-- [ ] Broader rename verification fixture set
+- [x] Multi-local-variable fixture
+- [x] Similar-name collision fixture
+- [x] Noisy editor-state fixture
+- [x] Broader rename verification fixture set
 
 ### Observability
 
@@ -338,13 +351,13 @@ This section is meant to be updated directly by future agents.
 - [x] Policy validator wrapper
 - [x] Policy-aware LLM prompt
 - [x] MiniMax tool-call parsing
-- [ ] Repeat-run evidence that the current rename policy is stable
+- [x] Repeat-run evidence that the current rename policy is stable
 - [ ] Decide whether any minimal policy widening is necessary
 
 ### Expansion
 
-- [ ] Add more rename fixtures
-- [ ] Keep rename policy fence while broadening fixtures
+- [x] Add more rename fixtures
+- [x] Keep rename policy fence while broadening fixtures
 - [ ] Choose next refactoring target
 - [ ] Write the next-phase design/plan only after rename reliability is measured
 

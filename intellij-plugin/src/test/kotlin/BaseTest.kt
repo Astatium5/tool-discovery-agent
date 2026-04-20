@@ -43,10 +43,17 @@ abstract class BaseTest {
     }
 
     protected fun openFreshCanonicalRenameFixture(executor: UiExecutor): String {
+        return openFreshRenameFixture(executor, GraphAgentRenameFixtureScenario.canonical)
+    }
+
+    protected fun openFreshRenameFixture(
+        executor: UiExecutor,
+        fixture: GraphAgentRenameFixtureScenario,
+    ): String {
         val tempDir = Path.of("build", "tmp", "graph-agent-fixtures").toAbsolutePath().normalize()
         Files.createDirectories(tempDir)
-        val fixturePath = tempDir.resolve("GraphAgentRenameFixture-${UUID.randomUUID()}.kt")
-        Files.writeString(fixturePath, canonicalRenameFixtureContents)
+        val fixturePath = tempDir.resolve("${fixture.fileStem}-${UUID.randomUUID()}.kt")
+        Files.writeString(fixturePath, fixture.contents)
         executor.openFile(fixturePath.toString())
         return fixturePath.toString()
     }

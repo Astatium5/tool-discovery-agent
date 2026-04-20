@@ -84,6 +84,7 @@ class GraphAgent(
         val actionHistory: List<ActionRecord> = emptyList(),
         val tokenCount: Int = 0,
         val iterations: Int = 0,
+        val artifactDir: String = "",
         val artifactPaths: List<String> = emptyList(),
     )
 
@@ -153,6 +154,7 @@ class GraphAgent(
                         actionHistory = actionHistory.toList(),
                         tokenCount = totalTokenCount,
                         iterations = iteration,
+                        artifactDir = artifactDirectoryPath(),
                         artifactPaths = artifactPaths.toList(),
                     )
                 }
@@ -165,6 +167,7 @@ class GraphAgent(
                 actionHistory = actionHistory.toList(),
                 tokenCount = totalTokenCount,
                 iterations = iteration,
+                artifactDir = artifactDirectoryPath(),
                 artifactPaths = artifactPaths.toList(),
             )
         }
@@ -222,6 +225,7 @@ class GraphAgent(
                             actionHistory = actionHistory.toList(),
                             tokenCount = totalTokenCount,
                             iterations = iteration,
+                            artifactDir = artifactDirectoryPath(),
                             artifactPaths = artifactPaths.toList(),
                         ),
                     )
@@ -236,6 +240,7 @@ class GraphAgent(
                             actionHistory = actionHistory.toList(),
                             tokenCount = totalTokenCount,
                             iterations = iteration,
+                            artifactDir = artifactDirectoryPath(),
                             artifactPaths = artifactPaths.toList(),
                         ),
                     )
@@ -511,6 +516,8 @@ class GraphAgent(
         println("  [ARTIFACT] Observed HTML snapshot: $normalizedPath")
         return normalizedPath
     }
+
+    private fun artifactDirectoryPath(): String = executionArtifactDir?.toAbsolutePath()?.normalize()?.toString() ?: ""
 
     /**
      * Helper to infer role from class name.

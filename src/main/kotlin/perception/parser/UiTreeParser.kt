@@ -146,9 +146,19 @@ object UiTreeParser {
         if (cls in ALWAYS_DROP) return null
 
         val accessibleName = el.attr("accessiblename").trim().take(80)
-        val rawText = el.attr("text").trim().replace(Regex("<[^>]+>"), "").take(120)
+        // Robot HTML may expose label either under @text or @visible_text; prefer
+        // the richer one so buttons / labels with only visible_text aren't lost.
+        val textAttr = el.attr("text").trim()
+        val visibleTextAttr = el.attr("visible_text").trim()
+        val rawText =
+            when {
+                textAttr.isNotBlank() -> textAttr
+                visibleTextAttr.isNotBlank() -> visibleTextAttr
+                else -> ""
+            }.replace(Regex("<[^>]+>"), "").take(120)
         val tooltip = el.attr("tooltiptext").trim().take(80)
         val enabled = el.attr("enabled") != "false"
+        val focused = el.attr("focused") == "true" || accessibleName.contains("focused", ignoreCase = true)
         val visible = el.attr("visible") != "false"
 
         if (!visible) return null
@@ -167,6 +177,7 @@ object UiTreeParser {
                         enabled = enabled,
                         hasSubmenu = false,
                         children = children,
+                        focused = focused,
                     )
                 else -> null
             }
@@ -194,6 +205,7 @@ object UiTreeParser {
             enabled = enabled,
             hasSubmenu = isSubmenuClass(cls),
             children = children,
+            focused = focused,
         )
     }
 

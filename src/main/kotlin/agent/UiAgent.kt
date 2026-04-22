@@ -1,15 +1,21 @@
 package agent
 
-import execution.ActionGenerator
 import dev.langchain4j.model.chat.ChatModel
+import execution.ActionGenerator
 import execution.UiExecutor
-import perception.UiTreeFormatter
+import llm.LLMReasoner
+import llm.LLMReasoner.Decision
+import llm.LLMReasoner.DecisionContext
+import llm.LLMReasoner.HistoryEntry
+import llm.LLMReasoner.MatchedRecipe
+import llm.PromptLogger
 import model.AgentAction
+import perception.UiDelta
+import perception.UiTreeFormatter
+import perception.parser.ScopedSnapshotBuilder
 import perception.parser.UiComponent
 import perception.parser.UiTreeParser
 import profile.ApplicationProfile
-import llm.LLMReasoner
-import llm.LLMReasoner.*
 import recipe.RecipeRegistry
 import recipe.VerifiedRecipe
 
@@ -27,15 +33,23 @@ import recipe.VerifiedRecipe
  * - UI state is observed, not assumed
  * - Recipes are references, not blind scripts
  * - Successful executions are saved as verified recipes
+ *
+ * @param promptLogDir Root directory for [PromptLogger] output. One sub-directory per
+ *                     [execute] call keeps sessions separate and easy to diff.
+ *                     Set to `null` to disable prompt logging entirely.
  */
 class UiAgent(
     private val llm: ChatModel,
     private val profile: ApplicationProfile,
     private val executor: UiExecutor,
     private val uiTreeProvider: () -> List<UiComponent>,
+    private val promptLogDir: String? = "sent_prompt",
 ) {
-    private val reasoner = LLMReasoner(llm)
-    private val actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm)
+    // Rebuilt for each [execute] call so every run gets its own session folder.
+    private var promptLogger: PromptLogger? = null
+    private var reasoner: LLMReasoner = LLMReasoner(llm)
+    private var actionGenerator: ActionGenerator =
+        ActionGenerator(executor, profile, uiTreeProvider, llm)
     private val recipeRegistry = RecipeRegistry()
 
     /**
@@ -60,13 +74,36 @@ class UiAgent(
         val lastDecision: Decision? = null,
         val failed: Boolean = false,
         val complete: Boolean = false,
-        val matchedRecipe: MatchedRecipe? = null, // Recipe with step tracking
-        val initialDocumentText: String? = null, // For diff-based completion detection
+        val matchedRecipe: MatchedRecipe? = null,
+        val initialDocumentText: String? = null,
+        /** Snapshot captured at the start of the previous iteration, for delta computation. */
+        val previousSnapshot: ScopedSnapshotBuilder.CompactSnapshot? = null,
+        /** Stable hash from [previousSnapshot]; duplicated for fast comparisons. */
+        val previousFingerprint: String = "",
+        /**
+         * Number of consecutive iterations whose pre-action fingerprint matches
+         * the one before — the primary stagnation signal.
+         */
+        val sameFingerprintStreak: Int = 0,
+        /** Consecutive duplicate actions with no intervening UI change. */
+        val sameActionStreak: Int = 0,
+        /** One-shot hint for the next LLM prompt. Consumed and cleared after use. */
+        val nextHint: String = "",
     )
 
     companion object {
         private const val MAX_ITERATIONS = 30
         private const val OBSERVE_DELAY_MS = 500L
+
+        /** Force an Observe after this many consecutive same-fingerprint iterations. */
+        private const val STAGNATION_WARN_STREAK = 2
+
+        /**
+         * Fail the loop after this many consecutive "same action + same fingerprint"
+         * iterations. Stricter than the previous 3-in-a-row rule because we now
+         * know for sure the UI didn't react.
+         */
+        private const val STAGNATION_FAIL_STREAK = 3
     }
 
     /**
@@ -82,6 +119,13 @@ class UiAgent(
     fun execute(intent: String): ExecutionResult {
         println("\n=== BRAIN AGENT ===")
         println("Intent: $intent")
+
+        // Start a new prompt-logging session per run so every LLM call for this
+        // intent lands under `sent_prompt/session_<ts>/NNN_<caller>.json`.
+        promptLogger = promptLogDir?.let { PromptLogger(baseDir = it) }
+        reasoner = LLMReasoner(llm, promptLogger)
+        actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm, promptLogger)
+        promptLogger?.let { println("  Prompt log session: ${it.sessionDir.path}") }
 
         // Try to find a matching recipe
         val matchedRecipe = findMatchingRecipe(intent)
@@ -101,28 +145,78 @@ class UiAgent(
                 initialDocumentText = initialDocumentText,
             )
 
+        // Make sure the tree parser and snapshot builder both use the same
+        // semantic profile — otherwise structural decisions (isDialog, role, …)
+        // disagree between parsing and reasoning.
+        UiTreeParser.profile = profile
+
         // Main execution loop
         while (state.iteration < MAX_ITERATIONS && !state.failed && !state.complete) {
             state = state.copy(iteration = state.iteration + 1)
 
             println("\n--- Iteration ${state.iteration} ---")
 
-            // 1. OBSERVE: Get current UI state (raw tree, no intermediate transformation)
+            // 1. OBSERVE: raw tree + compact snapshot + delta vs previous iter.
             val uiTree = uiTreeProvider.invoke()
+            // Live editor state is a thin JS round-trip — normally cheap, but it
+            // dispatches onto IntelliJ's EDT via `invokeAndWait`. When a modal
+            // dialog is on top (Change Signature, Find Usages preview, …) that
+            // EDT is inside a nested event loop which on macOS doesn't reliably
+            // pump non-EDT `invokeAndWait` requests. The call times out
+            // client-side but the queued task stays stuck on Remote Robot's
+            // serialized component-API dispatcher, poisoning every subsequent
+            // `/api/tree` and `/api/component/...` request **permanently** —
+            // the server then appears dead until the IDE is restarted. We
+            // cheaply check the raw tree for a visible dialog first and skip
+            // the JS call when one is open; editor code is in any case
+            // irrelevant while the LLM is supposed to be reading the dialog.
+            val dialogVisible = ScopedSnapshotBuilder.containsDialog(uiTree, profile)
+            val editorCode =
+                if (dialogVisible) {
+                    null
+                } else {
+                    try {
+                        executor.getEditorContext()?.let {
+                            ScopedSnapshotBuilder.EditorCode(
+                                caretLine = it.caretLine,
+                                caretColumn = it.caretColumn,
+                                totalLines = it.totalLines,
+                                symbolUnderCaret = it.symbolUnderCaret,
+                                selectedText = it.selectedText,
+                                windowStartLine = it.windowStartLine,
+                                windowEndLine = it.windowEndLine,
+                                visibleText = it.visibleText,
+                            )
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            val snapshot = ScopedSnapshotBuilder.buildCompactSnapshot(uiTree, profile, editorCode)
+            val delta = UiDelta.between(state.previousSnapshot, snapshot)
+            val fingerprintBefore = snapshot.fingerprint
+
             val uiDescription = UiTreeFormatter.format(uiTree, profile)
             state.uiStateHistory.add(uiDescription)
 
-            println("  Observed UI tree with ${uiTree.size} root components")
+            println(
+                "  Observed UI tree with ${uiTree.size} root components " +
+                    "(fingerprint=${fingerprintBefore.take(8)}, ctx=${snapshot.activeContext})",
+            )
 
             // Show recipe step info if available
             state.matchedRecipe?.let { recipe ->
                 val currentStep = recipe.getCurrentStep()
                 if (currentStep != null) {
-                    println("  Recipe Step ${recipe.currentStep + 1}/${recipe.recipe.successfulActions.size}: ${currentStep.action.type}")
+                    println(
+                        "  Recipe Step ${recipe.currentStep + 1}/${recipe.recipe.successfulActions.size}: " +
+                            currentStep.action.type,
+                    )
                 }
             }
 
-            // 2. REASON: LLM decides next action (using raw tree directly)
+            // 2. REASON: pass the delta (and any pending hint) so the LLM sees
+            // what changed and any guidance the loop has accumulated.
             val context =
                 DecisionContext(
                     intent = intent,
@@ -130,66 +224,169 @@ class UiAgent(
                     profile = profile,
                     actionHistory = state.actionHistory.toList(),
                     matchedRecipe = state.matchedRecipe,
+                    uiDelta = delta,
+                    extraHint = state.nextHint,
+                    editorCode = editorCode,
                 )
+            // Hint has been consumed by this prompt; clear it for subsequent iters.
+            state = state.copy(nextHint = "")
 
             val decision = reasoner.decide(context)
             println("  LLM Reasoning: ${decision.reasoning.take(200)}...")
-            println("  LLM Decision: ${describeAction(decision.action)} (confidence: ${"%.2f".format(decision.confidence)})")
+            println(
+                "  LLM Decision: ${describeAction(decision.action)} " +
+                    "(confidence: ${"%.2f".format(decision.confidence)})",
+            )
+            if (decision.assumptions.isNotBlank()) {
+                println("  LLM Assumptions: ${decision.assumptions.take(160)}")
+            }
 
-            // Loop detection: same action repeated 3+ times consecutively
-            val lastActions = state.actionHistory.takeLast(3).map { describeAction(it.action) }
-            val currentAction = describeAction(decision.action)
-            if (lastActions.size == 3 && lastActions.all { it == currentAction }) {
-                println("  Loop detected: '$currentAction' repeated 3 times. Stopping.")
+            // Fingerprint-based stagnation: if the UI didn't change since last
+            // iteration and the LLM picks the same action again, don't re-run it.
+            val currentActionDesc = describeAction(decision.action)
+            val prevActionDesc = state.actionHistory.lastOrNull()?.let { describeAction(it.action) }
+            val sameFingerprint =
+                state.previousFingerprint.isNotEmpty() &&
+                    state.previousFingerprint == fingerprintBefore
+            val sameAction = prevActionDesc != null && prevActionDesc == currentActionDesc
+
+            // Special case 1: in an empty editor snapshot, Observe genuinely
+            // can't help and the model has no other signal. Don't count it
+            // toward stagnation — instead, feed the LLM a one-shot hint on
+            // the next turn telling it to act on the editor directly.
+            val activeWindowEmpty =
+                snapshot.activeWindow.fields.isEmpty() &&
+                    snapshot.activeWindow.buttons.isEmpty() &&
+                    snapshot.activeWindow.menuItems.isEmpty()
+            val observeInEmptyEditor =
+                decision.action is AgentAction.Observe &&
+                    snapshot.activeContext == ScopedSnapshotBuilder.ActiveContext.EDITOR &&
+                    activeWindowEmpty
+
+            // Special case 2: inline template (rename/extract). Observing
+            // here just wastes iterations — the only way to make progress
+            // is to type the new name and press Enter. We nudge the LLM
+            // explicitly instead of silently stalling.
+            val observeInInlineWidget =
+                decision.action is AgentAction.Observe &&
+                    snapshot.activeContext == ScopedSnapshotBuilder.ActiveContext.INLINE_WIDGET
+
+            val shouldSkipStagnation = observeInEmptyEditor || observeInInlineWidget
+
+            val newSameFingerprintStreak =
+                if (sameFingerprint && !shouldSkipStagnation) state.sameFingerprintStreak + 1 else 0
+            val newSameActionStreak =
+                if (sameFingerprint && sameAction && !shouldSkipStagnation) {
+                    state.sameActionStreak + 1
+                } else {
+                    0
+                }
+
+            if (observeInEmptyEditor) {
+                val hint =
+                    "Observe won't help — the UI snapshot is sparse because the editor area " +
+                        "is empty. Take a concrete action instead: OpenFile(<filename>) if no " +
+                        "file is open, MoveCaret(<symbol>) to position in an open file, or " +
+                        "PressKey(\"context_menu\") once the caret is placed."
+                println("  Empty-editor Observe: injecting hint for next iter.")
+                state = state.copy(nextHint = hint)
+            }
+
+            if (observeInInlineWidget) {
+                val oldId = snapshot.inlineWidget?.oldIdentifier.orEmpty()
+                val hint =
+                    "An in-place rename template is LIVE. The old identifier " +
+                        (if (oldId.isNotBlank()) "\"$oldId\" " else "") +
+                        "is already selected in the editor — type the new name " +
+                        "(Type with clearFirst=false) then PressKey(\"Enter\") to commit. " +
+                        "Observe will not advance this state."
+                println("  Inline-widget Observe: injecting type+Enter hint.")
+                state = state.copy(nextHint = hint)
+            }
+
+            if (newSameActionStreak >= STAGNATION_FAIL_STREAK) {
+                println(
+                    "  Stagnation: '$currentActionDesc' + no UI change for " +
+                        "$newSameActionStreak iterations. Stopping.",
+                )
                 state = state.copy(failed = true, lastDecision = decision)
                 break
             }
 
+            // Effective action: after a short stagnation, override a repeated
+            // no-op action with Observe so the LLM gets a fresh view next turn.
+            val effectiveAction =
+                if (sameFingerprint && sameAction && newSameFingerprintStreak >= STAGNATION_WARN_STREAK) {
+                    println("  Stagnation guard: forcing Observe (UI unchanged for $newSameFingerprintStreak iters)")
+                    AgentAction.Observe
+                } else {
+                    decision.action
+                }
+
             // Check for completion or failure
-            if (decision.taskComplete || decision.action is AgentAction.Complete) {
+            if (decision.taskComplete || effectiveAction is AgentAction.Complete) {
                 println("  Task marked as complete by LLM")
                 state = state.copy(complete = true, lastDecision = decision)
                 break
             }
 
-            if (decision.action is AgentAction.Fail) {
+            if (effectiveAction is AgentAction.Fail) {
                 println("  Task marked as failed by LLM")
                 state = state.copy(failed = true, lastDecision = decision)
                 break
             }
 
-            // 3. ACT: Execute the action
-            val actionResult = actionGenerator.execute(decision.action, uiTree)
+            // 3. ACT: execute with intent as goal for post-click analysis.
+            val actionResult = actionGenerator.execute(effectiveAction, uiTree, goal = intent)
             println("  Action Result: ${actionResult.message}")
 
-            // Record in history
+            // Observe again so history carries a meaningful post-fingerprint.
+            Thread.sleep(OBSERVE_DELAY_MS)
+            val postTree = uiTreeProvider.invoke()
+            val postSnapshot = ScopedSnapshotBuilder.buildCompactSnapshot(postTree, profile)
+
             state.actionHistory.add(
                 HistoryEntry(
-                    action = decision.action,
+                    action = effectiveAction,
                     result = actionResult.message,
                     success = actionResult.success,
+                    expected = decision.expectedResult,
+                    fingerprintBefore = fingerprintBefore,
+                    fingerprintAfter = postSnapshot.fingerprint,
                 ),
             )
 
-            // Advance recipe step if action was successful and we have a matched recipe
-            if (actionResult.success && state.matchedRecipe != null) {
+            // Advance recipe only on genuine success, and only when the action
+            // we actually executed matches the LLM's decision (stagnation guard
+            // may have swapped it for Observe).
+            if (actionResult.success && effectiveAction === decision.action && state.matchedRecipe != null) {
                 val advancedRecipe = state.matchedRecipe.advance()
                 println("  Advanced to recipe step ${advancedRecipe.currentStep + 1}")
                 state = state.copy(matchedRecipe = advancedRecipe)
             }
 
-            // Wait for UI to update
-            Thread.sleep(OBSERVE_DELAY_MS)
-
-            // Check for diff-based completion (source code changed and no popups open)
             if (checkDiffBasedCompletion(state)) {
                 println("  ✓ Diff-based completion detected: source code changed and no popups open")
                 state = state.copy(complete = true, lastDecision = decision)
                 break
             }
 
-            // Update state
-            state = state.copy(lastDecision = decision)
+            // Carry the PRE-action snapshot into the next iteration's "previous"
+            // slot — NOT the post-action snapshot. Reason: the UI drifts slightly
+            // between iterations (caret blink, tooltip fade, async classloader
+            // hints) so post-of-N rarely equals pre-of-N+1 even when nothing
+            // meaningful changed. Comparing iteration-start fingerprints across
+            // iterations gives an honest stagnation signal: "did the world look
+            // the same the last time I was about to decide?". The per-action
+            // before/after pair is still captured in [HistoryEntry] above.
+            state =
+                state.copy(
+                    lastDecision = decision,
+                    previousSnapshot = snapshot,
+                    previousFingerprint = fingerprintBefore,
+                    sameFingerprintStreak = newSameFingerprintStreak,
+                    sameActionStreak = newSameActionStreak,
+                )
         }
 
         // Build final result
@@ -244,26 +441,10 @@ class UiAgent(
     }
 
     /**
-     * Describe an action for logging.
+     * Describe an action for logging. Delegates to [AgentAction.describe] so
+     * the canonical vocabulary lives in a single place.
      */
-    private fun describeAction(action: AgentAction): String {
-        return when (action) {
-            // Navigation actions
-            is AgentAction.OpenFile -> "OpenFile('${action.path}')"
-            is AgentAction.MoveCaret -> "MoveCaret('${action.symbol}')"
-            is AgentAction.SelectLines -> "SelectLines(${action.start}-${action.end})"
-            // UI interaction actions
-            is AgentAction.Click -> "Click('${action.target}')"
-            is AgentAction.Type -> "Type('${action.text}', clearFirst=${action.clearFirst})"
-            is AgentAction.PressKey -> "PressKey('${action.key}')"
-            is AgentAction.SelectDropdown -> "SelectDropdown('${action.target}', '${action.value}')"
-            is AgentAction.Wait -> "Wait('${action.elementType}')"
-            is AgentAction.UseRecipe -> "UseRecipe('${action.recipeId}')"
-            is AgentAction.Observe -> "Observe"
-            is AgentAction.Complete -> "Complete"
-            is AgentAction.Fail -> "Fail"
-        }
-    }
+    private fun describeAction(action: AgentAction): String = AgentAction.describe(action)
 
     /**
      * Build the final result.
@@ -341,7 +522,12 @@ class UiAgent(
         // Look for indicators in the action history
         val hasDialog =
             state.actionHistory.any { entry ->
-                entry.action is AgentAction.Click &&
+                val a = entry.action
+                val isClickLike =
+                    a is AgentAction.Click ||
+                        a is AgentAction.ClickMenuItem ||
+                        a is AgentAction.ClickButton
+                isClickLike &&
                     (
                         entry.result.contains("dialog", ignoreCase = true) ||
                             entry.result.contains("popup", ignoreCase = true)

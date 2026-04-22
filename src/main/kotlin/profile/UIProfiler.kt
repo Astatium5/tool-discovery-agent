@@ -4,6 +4,7 @@ import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.model.chat.ChatModel
 import execution.UiExecutor
+import llm.PromptLogger
 import perception.parser.UiTreeProvider
 
 /**
@@ -29,6 +30,7 @@ class UIProfiler(
     private val llm: ChatModel,
     private val profilePath: String = "build/reports/app-profile.json",
     private val executor: UiExecutor? = null,
+    private val promptLogger: PromptLogger? = null,
 ) {
     companion object {
         private const val MAX_CLASSES_PER_BATCH = 60
@@ -324,11 +326,27 @@ Return JSON array only, no markdown fences:
                 .replace("{{MISSING_ROLES}}", rolesDescription)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from(SYSTEM_PROMPT),
-                UserMessage.from(prompt),
+            val started = System.currentTimeMillis()
+            val response =
+                llm.chat(
+                    SystemMessage.from(SYSTEM_PROMPT),
+                    UserMessage.from(prompt),
+                )
+            val durationMs = System.currentTimeMillis() - started
+            val rawText = response.aiMessage().text()
+            promptLogger?.log(
+                context =
+                    PromptLogger.LogContext(
+                        caller = "UIProfiler.inferMissingClasses",
+                        extra = mapOf("toolkit" to toolkitHint),
+                    ),
+                model = llm::class.simpleName ?: "unknown",
+                messages = PromptLogger.messages(SYSTEM_PROMPT, prompt),
+                rawResponse = rawText,
+                parsedResponse = rawText,
+                durationMs = durationMs,
             )
-            val parsed = parseClassifications(response.aiMessage().text())
+            val parsed = parseClassifications(rawText)
             println("      Inferred: ${parsed.entries.joinToString(", ") { "${it.key} -> ${it.value}" }}")
             parsed
         } catch (e: Exception) {
@@ -380,11 +398,27 @@ Return JSON array only, no markdown fences:
         val prompt = CLASSIFICATION_PROMPT_TEMPLATE.replace("{{CLASSES}}", classesBlock)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from(SYSTEM_PROMPT),
-                UserMessage.from(prompt),
+            val started = System.currentTimeMillis()
+            val response =
+                llm.chat(
+                    SystemMessage.from(SYSTEM_PROMPT),
+                    UserMessage.from(prompt),
+                )
+            val durationMs = System.currentTimeMillis() - started
+            val rawText = response.aiMessage().text()
+            promptLogger?.log(
+                context =
+                    PromptLogger.LogContext(
+                        caller = "UIProfiler.classifyBatch",
+                        extra = mapOf("batchSize" to batch.size.toString()),
+                    ),
+                model = llm::class.simpleName ?: "unknown",
+                messages = PromptLogger.messages(SYSTEM_PROMPT, prompt),
+                rawResponse = rawText,
+                parsedResponse = rawText,
+                durationMs = durationMs,
             )
-            parseClassifications(response.aiMessage().text())
+            parseClassifications(rawText)
         } catch (e: Exception) {
             println("  UIProfiler: LLM classification failed: ${e.message}")
             emptyMap()

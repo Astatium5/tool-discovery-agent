@@ -3,9 +3,9 @@ package recipe
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import model.AgentAction
 import llm.LLMReasoner.HistoryEntry
 import llm.LLMReasoner.RecipeSummary
+import model.AgentAction
 import java.io.File
 import java.time.Instant
 
@@ -70,6 +70,10 @@ data class VerifiedRecipe(
                     )
                 // UI interaction actions
                 "click" -> AgentAction.Click(params["target"] ?: "")
+                "click_menu_item" -> AgentAction.ClickMenuItem(params["target"] ?: "")
+                "click_button" -> AgentAction.ClickButton(params["target"] ?: "")
+                "open_context_menu" -> AgentAction.OpenContextMenu
+                "close_all_popups" -> AgentAction.CloseAllPopups
                 "type" ->
                     AgentAction.Type(
                         text = params["text"] ?: "",
@@ -87,7 +91,26 @@ data class VerifiedRecipe(
                         elementType = params["elementType"] ?: "dialog",
                         timeoutMs = params["timeoutMs"]?.toLongOrNull() ?: 5000,
                     )
-                else -> AgentAction.Observe
+                "focus_editor" -> AgentAction.FocusEditor
+                "cancel_dialog" -> AgentAction.CancelDialog
+                "set_checkbox" ->
+                    AgentAction.SetCheckbox(
+                        target = params["target"] ?: "",
+                        checked = params["checked"]?.toBoolean() ?: true,
+                    )
+                "scroll" ->
+                    AgentAction.Scroll(
+                        direction = params["direction"] ?: "down",
+                        target = params["target"] ?: "",
+                        amount = params["amount"]?.toIntOrNull() ?: 1,
+                    )
+                "verify" -> AgentAction.Verify(params["predicate"] ?: "")
+                "observe" -> AgentAction.Observe
+                "complete" -> AgentAction.Complete
+                "fail" -> AgentAction.Fail
+                // Unknown action types must not silently degrade to Observe:
+                // that hides bugs during recipe deserialization.
+                else -> throw IllegalArgumentException("Unknown recipe action type: '$type' (params=$params)")
             }
         }
 
@@ -107,6 +130,10 @@ data class VerifiedRecipe(
                         )
                     // UI interaction actions
                     is AgentAction.Click -> ActionJson("click", mapOf("target" to action.target))
+                    is AgentAction.ClickMenuItem -> ActionJson("click_menu_item", mapOf("target" to action.target))
+                    is AgentAction.ClickButton -> ActionJson("click_button", mapOf("target" to action.target))
+                    is AgentAction.OpenContextMenu -> ActionJson("open_context_menu")
+                    is AgentAction.CloseAllPopups -> ActionJson("close_all_popups")
                     is AgentAction.Type ->
                         ActionJson(
                             "type",
@@ -134,6 +161,26 @@ data class VerifiedRecipe(
                             ),
                         )
                     is AgentAction.UseRecipe -> ActionJson("use_recipe", mapOf("recipeId" to action.recipeId))
+                    is AgentAction.FocusEditor -> ActionJson("focus_editor")
+                    is AgentAction.CancelDialog -> ActionJson("cancel_dialog")
+                    is AgentAction.SetCheckbox ->
+                        ActionJson(
+                            "set_checkbox",
+                            mapOf(
+                                "target" to action.target,
+                                "checked" to action.checked.toString(),
+                            ),
+                        )
+                    is AgentAction.Scroll ->
+                        ActionJson(
+                            "scroll",
+                            mapOf(
+                                "direction" to action.direction,
+                                "target" to action.target,
+                                "amount" to action.amount.toString(),
+                            ),
+                        )
+                    is AgentAction.Verify -> ActionJson("verify", mapOf("predicate" to action.predicate))
                     is AgentAction.Observe -> ActionJson("observe")
                     is AgentAction.Complete -> ActionJson("complete")
                     is AgentAction.Fail -> ActionJson("fail")

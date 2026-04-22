@@ -6,6 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization") version "2.3.0"
     id("org.jetbrains.intellij.platform") version "2.13.1"
     id("org.jlleitschuh.gradle.ktlint") version "12.1.2"
+    id("co.uzzu.dotenv.gradle") version "2.1.0"
 }
 
 group = "com.tooldiscovery"
@@ -130,7 +131,6 @@ intellijPlatformTesting {
             plugins {
                 // Robot server plugin for UI testing
                 robotServerPlugin(remoteRobotVersion)
-                id("co.uzzu.dotenv.gradle") version "2.1.0"
             }
         }
     }

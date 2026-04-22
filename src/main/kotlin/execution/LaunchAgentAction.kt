@@ -1,13 +1,12 @@
 package execution
 
+import agent.UiAgent
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.ui.Messages
 import com.intellij.remoterobot.RemoteRobot
-import agent.UiAgent
 import llm.LlmModel
-import perception.UiTreeFormatter
 import perception.parser.HtmlUiTreeProvider
 import profile.ApplicationProfile
 import java.io.File
@@ -18,31 +17,37 @@ class LaunchAgentAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         log.info("Tool Discovery Agent action triggered")
 
-        val project = e.project ?: run {
-            Messages.showErrorDialog("No project open.", "Tool Discovery Agent")
-            return
-        }
+        val project =
+            e.project ?: run {
+                Messages.showErrorDialog("No project open.", "Tool Discovery Agent")
+                return
+            }
 
         // Read .env config — try project dir, then working dir, then walk up
-        val searchDirs = buildList {
-            project.basePath?.let { add(it) }
-            add(System.getProperty("user.dir"))
-            // Walk up from working dir looking for .env
-            var dir = File(System.getProperty("user.dir"))
-            while (dir.parentFile != null) {
-                dir = dir.parentFile
-                add(dir.absolutePath)
+        val searchDirs =
+            buildList {
+                project.basePath?.let { add(it) }
+                add(System.getProperty("user.dir"))
+                // Walk up from working dir looking for .env
+                var dir = File(System.getProperty("user.dir"))
+                while (dir.parentFile != null) {
+                    dir = dir.parentFile
+                    add(dir.absolutePath)
+                }
             }
-        }
         val envConfig = searchDirs.firstNotNullOfOrNull { loadEnvConfig(it) } ?: emptyMap()
-        val apiKey = envConfig["LLM_API_KEY"]
-            ?: System.getenv("LLM_API_KEY")
-        val baseUrl = envConfig["LLM_BASE_URL"]
-            ?: System.getenv("LLM_BASE_URL")
-            ?: "https://coding-intl.dashscope.aliyuncs.com/v1"
-        val model = envConfig["LLM_MODEL"]
-            ?: System.getenv("LLM_MODEL")
-            ?: "MiniMax-M2.5"
+//        val apiKey = envConfig["LLM_API_KEY"]
+//            ?: System.getenv("LLM_API_KEY")
+//        val baseUrl = envConfig["LLM_BASE_URL"]
+//            ?: System.getenv("LLM_BASE_URL")
+//            ?: "https://coding-intl.dashscope.aliyuncs.com/v1"
+//        val model = envConfig["LLM_MODEL"]
+//            ?: System.getenv("LLM_MODEL")
+//            ?: "MiniMax-M2.5"
+
+        val apiKey = "sk-sp-494544412a3b4e4c8aa38d6555a4cdac"
+        val baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1"
+        val model = "MiniMax-M2.5"
 
         if (apiKey.isNullOrBlank()) {
             Messages.showErrorDialog(
@@ -81,11 +86,18 @@ class LaunchAgentAction : AnAction() {
         val llm = LlmModel.create(apiKey = apiKey, baseUrl = baseUrl, model = model)
         val treeProvider = HtmlUiTreeProvider("http://127.0.0.1:$robotPort")
         val basePath = searchDirs.first()
-        val profile = ApplicationProfile.loadFromFile("$basePath/build/reports/app-profile.json")
-            ?: ApplicationProfile(appName = "IntelliJ IDEA")
+        val profile =
+            ApplicationProfile.loadFromFile("$basePath/build/reports/app-profile.json")
+                ?: ApplicationProfile(appName = "IntelliJ IDEA")
         val executor = UiExecutor(robot, treeProvider)
 
-        val agent = UiAgent(llm, profile, executor) { treeProvider.fetchTree() }
+        val agent =
+            UiAgent(
+                llm = llm,
+                profile = profile,
+                executor = executor,
+                uiTreeProvider = { treeProvider.fetchTree() },
+            )
 
         // Run on background thread
         Thread {

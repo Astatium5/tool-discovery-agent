@@ -3,7 +3,7 @@ package execution
 import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.model.chat.ChatModel
-import execution.UiExecutor
+import llm.PromptLogger
 import model.AgentAction
 import perception.parser.ScopedSnapshotBuilder
 import perception.parser.UiComponent
@@ -27,6 +27,7 @@ class ActionGenerator(
     private val profile: ApplicationProfile,
     private val uiTreeProvider: () -> List<UiComponent>,
     private val llm: ChatModel? = null,
+    private val promptLogger: PromptLogger? = null,
 ) {
     companion object {
         /**
@@ -38,31 +39,35 @@ class ActionGenerator(
 Menu item clicked: {{TOOL_NAME}}
 User's goal: {{GOAL}}
 
-Current UI State:
-- Popup windows: {{POPUP_COUNT}}
+Current UI State (structured signals — trust these over your own reading):
+- Popup windows: {{POPUP_COUNT}}  (popup count BEFORE the click: {{PRE_POPUP_COUNT}})
 - Dialog detected: {{HAS_DIALOG}}
-- Inline editor detected: {{HAS_INLINE}}
+- Inline rename/extract widget detected: {{HAS_INLINE_WIDGET}}
+- Legacy inline-editor heuristic: {{HAS_INLINE}}
 - List/chooser detected: {{HAS_POPUP}}
 
-UI Snapshot (menu items visible):
+UI Snapshot (popups and focused component first):
 {{UI_SNAPSHOT}}
 
 ## Your Task
 Determine what happened after clicking the menu item. Classify into ONE of these categories:
 
 1. **SUBMENU** - The clicked item opened a submenu with more options
-   - Multiple popup windows exist
-   - Menu items are visible (e.g., "Extract Function...", "Extract Variable...")
-   - NO inline editor or dialog appeared
+   - Popup count grew (more popups than before the click)
+   - Menu items are visible in the snapshot (e.g., "Rename...", "Move...", "Extract Function...")
 
-2. **TOOL_TRIGGERED** - The actual refactoring tool was triggered
-   - An inline editor appeared (for typing function name, etc.)
-   - A dialog appeared with fields/buttons
-   - A popup chooser appeared for selecting options
+2. **TOOL_TRIGGERED** - The actual tool was triggered
+   - Dialog detected is true → a dialog was opened
+   - Inline rename/extract widget detected is true → an inline template is live (type the new name + Enter)
+   - A popup chooser (list/table/tree) is present without normal menu items
 
 3. **DISMISSED** - The menu closed without triggering anything
-   - No popups, no dialogs, no inline editors
-   - The click may have failed or the action was cancelled
+   - Popup count is 0 AND Dialog detected is false AND inline widget detected is false
+   - ONLY choose this when ALL three conditions hold — if any popup remains, the click almost certainly had some effect (a submenu opened, an inline widget rendered, or a chooser appeared) and you should pick SUBMENU or TOOL_TRIGGERED.
+
+## Important
+- The boolean flags above are computed by a structured detector, not by your reading of the snapshot. If "Inline rename/extract widget detected" is TRUE, the state is TOOL_TRIGGERED regardless of what the snapshot text shows.
+- If you cannot identify specific menu items but popup count is non-zero, prefer TOOL_TRIGGERED over DISMISSED — the tool likely opened something we couldn't render.
 
 Return JSON:
 {
@@ -115,11 +120,14 @@ Return JSON:
      *
      * @param action The action to execute
      * @param currentUiTree The current UI tree (raw, no intermediate transformation)
+     * @param goal The user's intent, forwarded to LLM-based post-click analysis so
+     *   the classifier has enough context to distinguish submenu from tool trigger.
      * @return The result of the action
      */
     fun execute(
         action: AgentAction,
         currentUiTree: List<UiComponent>,
+        goal: String = "",
     ): ActionResult {
         println("  ActionGenerator: Executing ${action::class.simpleName}")
 
@@ -129,12 +137,21 @@ Return JSON:
             is AgentAction.MoveCaret -> executeMoveCaret(action)
             is AgentAction.SelectLines -> executeSelectLines(action)
             // UI interaction actions
-            is AgentAction.Click -> executeClick(action, currentUiTree)
+            is AgentAction.Click -> executeClick(action, currentUiTree, goal)
+            is AgentAction.ClickMenuItem -> executeClickMenuItem(action, goal)
+            is AgentAction.ClickButton -> executeClickButton(action)
+            is AgentAction.OpenContextMenu -> executeOpenContextMenu()
+            is AgentAction.CloseAllPopups -> executeCloseAllPopups()
             is AgentAction.Type -> executeType(action, currentUiTree)
             is AgentAction.PressKey -> executePressKey(action)
             is AgentAction.SelectDropdown -> executeSelectDropdown(action, currentUiTree)
             is AgentAction.Wait -> executeWait(action, currentUiTree)
             is AgentAction.UseRecipe -> executeRecipe(action, currentUiTree)
+            is AgentAction.FocusEditor -> executeFocusEditor()
+            is AgentAction.CancelDialog -> executeCancelDialog()
+            is AgentAction.SetCheckbox -> executeSetCheckbox(action)
+            is AgentAction.Scroll -> executeScroll(action)
+            is AgentAction.Verify -> executeVerify(action, currentUiTree)
             is AgentAction.Observe -> ActionResult(true, "Observed UI state")
             is AgentAction.Complete -> ActionResult(true, "Task completed")
             is AgentAction.Fail -> ActionResult(false, "Task failed")
@@ -145,14 +162,49 @@ Return JSON:
 
     /**
      * Execute an OpenFile action.
+     *
+     * After triggering the open, we inspect the UI tree for evidence that the
+     * file actually came up: a matching editor tab, a nav-bar breadcrumb, or
+     * an `accessibleName` like `Editor for <filename>`. If none of that is
+     * visible the action is reported as a failure so the agent loop doesn't
+     * silently march on assuming the file is open.
      */
     private fun executeOpenFile(action: AgentAction.OpenFile): ActionResult {
         return try {
             executor.openFile(action.path)
-            Thread.sleep(1000) // Wait for file to open
-            ActionResult(true, "Opened file '${action.path}'")
+            Thread.sleep(1000)
+            val opened = isFileVisiblyOpen(action.path)
+            if (opened) {
+                ActionResult(true, "Opened file '${action.path}'")
+            } else {
+                ActionResult(
+                    false,
+                    "OpenFile triggered for '${action.path}' but no matching editor/tab/breadcrumb appeared. " +
+                        "The Search Everywhere dialog may still be open, or the filename may not match.",
+                )
+            }
         } catch (e: Exception) {
             ActionResult(false, "Failed to open file: ${e.message}")
+        }
+    }
+
+    /**
+     * Heuristic check for "is this file visibly open". We look across the
+     * whole tree rather than relying on the compact snapshot so this works
+     * even when the profile hasn't classified the editor/tab classes.
+     */
+    private fun isFileVisiblyOpen(path: String): Boolean {
+        val filename = path.substringAfterLast('/').substringAfterLast('\\')
+        if (filename.isBlank()) return false
+        val all = UiTreeParser.flatten(uiTreeProvider.invoke())
+        return all.any { c ->
+            val acc = c.accessibleName
+            val txt = c.text
+            acc.equals(filename, ignoreCase = true) ||
+                txt.equals(filename, ignoreCase = true) ||
+                acc.endsWith("/$filename", ignoreCase = true) ||
+                acc.equals("Editor for $filename", ignoreCase = true) ||
+                acc.startsWith("Editor for ", ignoreCase = true) && acc.endsWith(filename, ignoreCase = true)
         }
     }
 
@@ -161,9 +213,23 @@ Return JSON:
      */
     private fun executeMoveCaret(action: AgentAction.MoveCaret): ActionResult {
         return try {
-            executor.moveCaret(action.symbol)
+            val outcome = executor.moveCaret(action.symbol)
             Thread.sleep(300)
-            ActionResult(true, "Moved caret to '${action.symbol}'")
+            // When the caret was ALREADY on the symbol, say so explicitly.
+            // That's the signal for the LLM to stop re-navigating and
+            // invoke the next step (OpenContextMenu, etc.). We still
+            // return success=true because the precondition "caret is on
+            // '<symbol>'" holds — the action is just a no-op.
+            val msg =
+                if (outcome.alreadyOnSymbol) {
+                    "Caret was already on '${action.symbol}' (line ${outcome.line}). " +
+                        "No navigation needed — proceed with the next step " +
+                        "(e.g. OpenContextMenu then the refactor). IntelliJ's " +
+                        "refactorings resolve from a call site to the declaration."
+                } else {
+                    "Moved caret to '${action.symbol}' (line ${outcome.line})"
+                }
+            ActionResult(true, msg)
         } catch (e: Exception) {
             ActionResult(false, "Failed to move caret: ${e.message}")
         }
@@ -196,70 +262,138 @@ Return JSON:
     private fun executeClick(
         action: AgentAction.Click,
         uiTree: List<UiComponent>,
+        goal: String = "",
     ): ActionResult {
         val target = action.target
 
+        // Use the compact snapshot to decide which click helper to try first.
+        // For POPUP_MENU / POPUP_CHOOSER we want clickMenuItem; for DIALOG we
+        // want clickDialogButton. EDITOR with a *MenuItem present in the tree
+        // also routes to menu-item click (e.g. just-opened context menu the
+        // profile hasn't classified).
+        val preClickSnapshot = ScopedSnapshotBuilder.buildCompactSnapshot(uiTree, profile)
+        val hasMenuItemsInTree =
+            UiTreeParser.flatten(uiTree).any { it.cls.contains("MenuItem") || it.cls == "ActionMenu" }
+        val menuFirst =
+            preClickSnapshot.activeContext == ScopedSnapshotBuilder.ActiveContext.POPUP_MENU ||
+                preClickSnapshot.activeContext == ScopedSnapshotBuilder.ActiveContext.POPUP_CHOOSER ||
+                hasMenuItemsInTree
+
         return try {
-            // Try to click as a menu item first, then as a dialog button
-            try {
-                // Get pre-click popup count for comparison
-                val preClickUiTree = uiTreeProvider()
-                val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
-
-                executor.clickMenuItem(target)
-                // Wait for menu action to take effect
-                Thread.sleep(800)
-
-                // ALWAYS wait for UI changes and classify - no keyword-based shortcuts
-                val waitResult = waitForUIElement(timeoutMs = 2000)
-
-                // Get fresh UI tree for LLM analysis
-                val postClickUiTree = uiTreeProvider()
-
-                // ALWAYS use LLM-based state analysis to classify what happened
-                val analysis =
-                    analyzeToolResponse(
-                        toolName = target,
-                        uiTree = postClickUiTree,
-                        goal = "", // Goal would be passed from context
-                        preClickPopupCount = preClickPopupCount,
-                    )
-
-                println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
-
-                // Return result with analysis data
-                ActionResult(
-                    success = true,
-                    message = "Clicked menu item '$target' - ${analysis.description}",
-                    data =
-                        mapOf(
-                            "analysis" to analysis,
-                            "stateType" to analysis.stateType.name,
-                            "isSubmenu" to analysis.isSubmenu,
-                            "isToolTriggered" to analysis.isToolTriggered,
-                            "availableItems" to analysis.availableItems,
-                            "confirmAction" to analysis.confirmAction,
-                            "dialogFields" to analysis.dialogFields,
-                        ),
-                )
-            } catch (e: Exception) {
-                // Try as dialog button
-                try {
-                    executor.clickDialogButton(target)
-                    Thread.sleep(500)
-                    ActionResult(true, "Clicked button '$target'")
-                } catch (e2: Exception) {
-                    ActionResult(false, "Could not click '$target': ${e2.message}")
-                }
+            if (menuFirst) {
+                tryMenuItemThenDialogButton(target, goal)
+            } else {
+                tryDialogButtonThenMenuItem(target, goal)
             }
         } catch (e: Exception) {
             ActionResult(false, "Failed to click '$target': ${e.message}")
         }
     }
 
+    private fun tryMenuItemThenDialogButton(
+        target: String,
+        goal: String,
+    ): ActionResult {
+        try {
+            return performMenuClick(target, goal)
+        } catch (menuErr: Exception) {
+            println("    clickMenuItem failed: ${menuErr.message} — falling back to dialog button")
+            return try {
+                executor.clickDialogButton(target)
+                Thread.sleep(500)
+                ActionResult(true, "Clicked button '$target'")
+            } catch (btnErr: Exception) {
+                ActionResult(false, "Could not click '$target' as menu item or button: ${btnErr.message}")
+            }
+        }
+    }
+
+    private fun tryDialogButtonThenMenuItem(
+        target: String,
+        goal: String,
+    ): ActionResult {
+        return try {
+            executor.clickDialogButton(target)
+            Thread.sleep(500)
+            ActionResult(true, "Clicked button '$target'")
+        } catch (btnErr: Exception) {
+            println("    clickDialogButton failed: ${btnErr.message} — falling back to menu item")
+            try {
+                performMenuClick(target, goal)
+            } catch (menuErr: Exception) {
+                ActionResult(false, "Could not click '$target' as button or menu item: ${menuErr.message}")
+            }
+        }
+    }
+
+    private fun performMenuClick(
+        target: String,
+        goal: String,
+    ): ActionResult {
+        val preClickUiTree = uiTreeProvider()
+        val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
+
+        executor.clickMenuItem(target)
+        Thread.sleep(800)
+        waitForUIElement(timeoutMs = 2000)
+
+        val postClickUiTree = uiTreeProvider()
+
+        val analysis =
+            analyzeToolResponse(
+                toolName = target,
+                uiTree = postClickUiTree,
+                goal = goal,
+                preClickPopupCount = preClickPopupCount,
+            )
+
+        println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
+
+        val success = !analysis.isDismissed
+        val prefix = if (success) "Clicked menu item" else "Click had no effect on"
+
+        return ActionResult(
+            success = success,
+            message = "$prefix '$target' - ${analysis.description}",
+            data =
+                mapOf(
+                    "analysis" to analysis,
+                    "stateType" to analysis.stateType.name,
+                    "isSubmenu" to analysis.isSubmenu,
+                    "isToolTriggered" to analysis.isToolTriggered,
+                    "availableItems" to analysis.availableItems,
+                    "confirmAction" to analysis.confirmAction,
+                    "dialogFields" to analysis.dialogFields,
+                ),
+        )
+    }
+
     /**
-     * Wait for a UI element (dialog, popup, or inline widget) to appear.
-     * Uses flattened component search and retry polling for reliability.
+     * Wait for a UI element (dialog, popup, or inline widget) to appear
+     * after a click. This is a lightweight settle-probe and MUST stay
+     * side-effect free with respect to IntelliJ's EDT.
+     *
+     * Historical footgun: this loop used to call [UiExecutor.getEditorContext]
+     * (via `fetchEditorCodeSafely`) on every attempt, purely to enrich
+     * inline-widget detection. That helper fires a Remote Robot `callJs`
+     * which dispatches onto the EDT via `invokeAndWait`. When the click
+     * being settled is something like `Change Signature...` — which is
+     * mid-construction of a modal dialog on the EDT — the JS request
+     * queues, our HTTP client times out after ~10s, but **the queued
+     * task on Remote Robot's side remains stuck** because macOS modal
+     * nested event loops don't reliably pump non-EDT `invokeAndWait`
+     * calls. Remote Robot serializes component-API requests, so a single
+     * stuck `callJs` poisons its dispatch queue and every subsequent
+     * `/api/tree` / `/api/component/...` hangs indefinitely.
+     *
+     * We therefore detect dialog / popup / text-input purely from the
+     * raw HTML tree — no JS round-trip, no EDT contention. Inline
+     * rename widgets are still detected from the tree alone (the
+     * suggestion JBList is always present); the `selectedText`
+     * refinement that editorCode used to provide is deferred to the
+     * next iteration's observe step, which runs when the dialog (if
+     * any) is already fully settled.
+     *
      * @return true if an element was detected, false otherwise
      */
     private fun waitForUIElement(timeoutMs: Long = 3000): Boolean {
@@ -272,27 +406,21 @@ Return JSON:
             attempt++
             val freshUiTree = uiTreeProvider()
 
-            // Use flattened search to find dialogs/popups at any depth
-            val allComponents = UiTreeParser.flatten(freshUiTree)
+            // Tree-only detection — no callJs. See docstring above.
+            val snap = ScopedSnapshotBuilder.buildCompactSnapshot(freshUiTree, profile, editorCode = null)
+            val hasDialog =
+                snap.windowStack.any { it.type == ScopedSnapshotBuilder.ActiveContext.DIALOG }
+            val hasInlineWidget = snap.inlineWidget != null
+            val popupCount = ScopedSnapshotBuilder.popupCount(freshUiTree)
+            val hasTextInput =
+                UiTreeParser.flatten(freshUiTree).any { profile.isTextInput(it.cls) && it.enabled }
 
-            // Check for dialogs using profile
-            val hasDialog = allComponents.any { profile.isDialog(it.cls) }
-            val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
-            val hasTextInput = allComponents.any { profile.isTextInput(it.cls) && it.enabled }
-
-            // Check for inline widget (popup with text input)
-            val hasInlineWidget =
-                allComponents.any { component ->
-                    profile.isPopupWindow(component.cls) &&
-                        component.children.any { profile.isTextInput(it.cls) }
-                }
-
-            if (hasDialog || hasPopup || hasTextInput || hasInlineWidget) {
+            if (hasDialog || hasInlineWidget || popupCount > 0 || hasTextInput) {
                 val detectedType =
                     when {
                         hasDialog -> "dialog"
                         hasInlineWidget -> "inline widget"
-                        hasPopup -> "popup"
+                        popupCount > 0 -> "popup"
                         else -> "text input"
                     }
                 println("    ✓ UI element detected: $detectedType (attempt $attempt)")
@@ -308,14 +436,20 @@ Return JSON:
 
     /**
      * Execute a type action.
-     * If target is specified, uses focusField to focus the field before typing.
+     *
+     * If [AgentAction.Type.target] is set, we first focus that field. Clearing
+     * is delegated entirely to [UiExecutor.typeInDialog], which picks the
+     * correct strategy based on focus (platform-aware select-all for text
+     * fields, skip-clear for inline editor templates). The prior implementation
+     * emitted an extra outer `Ctrl+A` here which, combined with the internal
+     * clear, could wipe the whole source file when the inline rename template
+     * left focus on `EditorComponentImpl`.
      */
     private fun executeType(
         action: AgentAction.Type,
         uiTree: List<UiComponent>,
     ): ActionResult {
         return try {
-            // If target is specified, focus the field first
             if (action.target != null) {
                 println("    Focusing field '${action.target}' before typing")
                 try {
@@ -323,18 +457,15 @@ Return JSON:
                     Thread.sleep(200)
                 } catch (e: Exception) {
                     println("    Could not focus field '${action.target}': ${e.message}")
-                    // Continue anyway - the field might already be focused
                 }
             }
 
-            if (action.clearFirst) {
-                // Select all first (Ctrl+A)
-                executor.pressShortcut("ctrl A")
-                Thread.sleep(100)
-            }
-            executor.typeInDialog(action.text)
+            executor.typeInDialog(action.text, clearFirst = action.clearFirst)
             Thread.sleep(action.text.length * 20L)
-            ActionResult(true, "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})")
+            ActionResult(
+                true,
+                "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})",
+            )
         } catch (e: Exception) {
             ActionResult(false, "Failed to type: ${e.message}")
         }
@@ -474,6 +605,320 @@ Return JSON:
         )
     }
 
+    // ── Extended action primitives ─────────────────────────────────────────────
+
+    /** Give focus back to the editor (common recovery after stray popups). */
+    private fun executeFocusEditor(): ActionResult {
+        return try {
+            executor.focusEditor()
+            Thread.sleep(150)
+            ActionResult(true, "Focused editor")
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to focus editor: ${e.message}")
+        }
+    }
+
+    /**
+     * Cancel the topmost dialog / popup.
+     *
+     * Verifies success by observing that the window stack shrank. If the
+     * topmost window is still open after Escape, the action is reported as
+     * a failure so the LLM doesn't assume the dialog is gone.
+     */
+    /**
+     * Click a menu item by label — dedicated form of [AgentAction.Click] that
+     * skips the button-fallback heuristic and reuses the existing
+     * [performMenuClick] LLM-analysed path so we still classify whether the
+     * click opened a submenu, triggered a tool, or dismissed.
+     */
+    private fun executeClickMenuItem(
+        action: AgentAction.ClickMenuItem,
+        goal: String,
+    ): ActionResult {
+        return try {
+            performMenuClick(action.target, goal)
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to click menu item '${action.target}': ${e.message}")
+        }
+    }
+
+    /**
+     * Click a dialog button by label — dedicated form of [AgentAction.Click]
+     * for DIALOG context. No menu fallback.
+     */
+    private fun executeClickButton(action: AgentAction.ClickButton): ActionResult {
+        return try {
+            executor.clickDialogButton(action.target)
+            Thread.sleep(400)
+            ActionResult(true, "Clicked button '${action.target}'")
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to click button '${action.target}': ${e.message}")
+        }
+    }
+
+    /** Open the editor context menu at the current caret position. */
+    private fun executeOpenContextMenu(): ActionResult {
+        return try {
+            executor.openContextMenu()
+            Thread.sleep(300)
+            ActionResult(true, "Opened context menu")
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to open context menu: ${e.message}")
+        }
+    }
+
+    /**
+     * Close every open popup/dialog with repeated Escape, verified by a
+     * shrinking window stack. Safe recovery primitive when the agent is
+     * stuck in a stacked-popup dead-end.
+     */
+    private fun executeCloseAllPopups(): ActionResult {
+        return try {
+            val before = uiTreeProvider()
+            val beforeCount = ScopedSnapshotBuilder.buildCompactSnapshot(before, profile).windowStack.size
+            executor.closeAllPopups()
+            Thread.sleep(200)
+            val after = uiTreeProvider()
+            val afterCount = ScopedSnapshotBuilder.buildCompactSnapshot(after, profile).windowStack.size
+            if (afterCount < beforeCount) {
+                ActionResult(true, "Closed popups/dialogs ($beforeCount -> $afterCount)")
+            } else if (beforeCount == 0) {
+                ActionResult(true, "No popups or dialogs were open")
+            } else {
+                ActionResult(false, "CloseAllPopups did not reduce window stack (still $afterCount)")
+            }
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to close popups: ${e.message}")
+        }
+    }
+
+    private fun executeCancelDialog(): ActionResult {
+        return try {
+            val before = uiTreeProvider()
+            val beforeSnap = ScopedSnapshotBuilder.buildCompactSnapshot(before, profile)
+            val topBefore = beforeSnap.windowStack.lastOrNull()
+
+            executor.pressEscape()
+            Thread.sleep(300)
+
+            val after = uiTreeProvider()
+            val afterSnap = ScopedSnapshotBuilder.buildCompactSnapshot(after, profile)
+            val topAfter = afterSnap.windowStack.lastOrNull()
+
+            val closed =
+                topBefore != null &&
+                    (topAfter == null || topAfter.title != topBefore.title || afterSnap.windowStack.size < beforeSnap.windowStack.size)
+
+            if (closed) {
+                ActionResult(true, "Cancelled topmost window '${topBefore.title}'")
+            } else {
+                ActionResult(false, "Escape pressed but topmost window '${topBefore?.title}' is still open")
+            }
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to cancel dialog: ${e.message}")
+        }
+    }
+
+    private fun executeSetCheckbox(action: AgentAction.SetCheckbox): ActionResult {
+        return try {
+            executor.setCheckbox(action.target, action.checked)
+            Thread.sleep(200)
+            ActionResult(true, "Set checkbox '${action.target}' to ${action.checked}")
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to set checkbox '${action.target}': ${e.message}")
+        }
+    }
+
+    /**
+     * Scroll inside the active window.
+     *
+     * We map abstract directions onto keyboard shortcuts so the action works
+     * uniformly across lists, trees, tables, and editors.
+     */
+    private fun executeScroll(action: AgentAction.Scroll): ActionResult {
+        val key =
+            when (action.direction.lowercase()) {
+                "up" -> "UP"
+                "down" -> "DOWN"
+                "page_up", "pageup" -> "PAGE_UP"
+                "page_down", "pagedown" -> "PAGE_DOWN"
+                "home" -> "HOME"
+                "end" -> "END"
+                else -> return ActionResult(false, "Unknown scroll direction '${action.direction}'")
+            }
+
+        return try {
+            if (action.target.isNotBlank()) {
+                // Best-effort focus on the named target before scrolling.
+                try {
+                    executor.focusField(action.target)
+                } catch (_: Exception) {
+                    // Non-fatal: the target may not be a field but a generic list.
+                }
+            }
+            val steps = action.amount.coerceAtLeast(1)
+            repeat(steps) {
+                executor.pressKey(key)
+                Thread.sleep(80)
+            }
+            ActionResult(
+                success = true,
+                message =
+                    "Scrolled ${action.direction} x$steps" +
+                        if (action.target.isNotBlank()) " on '${action.target}'" else "",
+            )
+        } catch (e: Exception) {
+            ActionResult(false, "Failed to scroll: ${e.message}")
+        }
+    }
+
+    /**
+     * Evaluate a [AgentAction.Verify] predicate against the live UI.
+     *
+     * Predicates are deliberately restricted to what can be answered from a
+     * [ScopedSnapshotBuilder.CompactSnapshot] — this keeps verification free
+     * of side effects and cheap to run between steps.
+     */
+    private fun executeVerify(
+        action: AgentAction.Verify,
+        uiTree: List<UiComponent>,
+    ): ActionResult {
+        // Fetch live editor state too — source-content predicates need it, and
+        // the UI-surface predicates ignore it. A null editorCode just means
+        // source_* predicates will evaluate to false (no source to match
+        // against) which is the correct, conservative behaviour. We pass
+        // the tree so the helper can skip the `callJs` round-trip when a
+        // dialog is still on top (source_* predicates for edits applied
+        // after closing the dialog run in a later turn anyway, once the
+        // tree no longer contains that dialog).
+        val editorCode = fetchEditorCodeSafely(uiTree)
+        val snap = ScopedSnapshotBuilder.buildCompactSnapshot(uiTree, profile, editorCode)
+        val p = action.predicate.trim()
+        val (kind, arg) =
+            if (":" in p) {
+                val i = p.indexOf(':')
+                p.substring(0, i).lowercase() to p.substring(i + 1).trim()
+            } else if ("=" in p) {
+                val i = p.indexOf('=')
+                p.substring(0, i).lowercase() to p.substring(i + 1).trim()
+            } else {
+                p.lowercase() to ""
+            }
+
+        val labels = snap.activeWindow.let { it.fields + it.buttons + it.menuItems }
+        val visibleSource = editorCode?.visibleText.orEmpty()
+
+        // Lazy full-document fetch: only fire the `callJs` round-trip when a
+        // predicate actually needs it, and never while a dialog is open (same
+        // EDT-wedging reasoning as `fetchEditorCodeSafely`).
+        val fullDocumentText: String? by lazy {
+            if (ScopedSnapshotBuilder.containsDialog(uiTree, profile)) {
+                null
+            } else {
+                try {
+                    executor.getDocumentText()
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
+
+        val ok =
+            when (kind) {
+                "dialog_open" ->
+                    snap.windowStack.any {
+                        it.type == ScopedSnapshotBuilder.ActiveContext.DIALOG &&
+                            it.title.contains(arg, ignoreCase = true)
+                    }
+                "popup_open" ->
+                    snap.windowStack.any {
+                        it.type == ScopedSnapshotBuilder.ActiveContext.POPUP_MENU ||
+                            it.type == ScopedSnapshotBuilder.ActiveContext.POPUP_CHOOSER ||
+                            it.type == ScopedSnapshotBuilder.ActiveContext.INLINE_WIDGET
+                    }
+                "no_popup" -> snap.windowStack.isEmpty()
+                "context" ->
+                    runCatching { ScopedSnapshotBuilder.ActiveContext.valueOf(arg.uppercase()) }
+                        .getOrNull() == snap.activeContext
+                "button_enabled" ->
+                    snap.activeWindow.buttons.any {
+                        it.label.equals(arg, ignoreCase = true) && it.enabled
+                    }
+                "field_present" ->
+                    snap.activeWindow.fields.any { it.label.contains(arg, ignoreCase = true) }
+                "focused" ->
+                    snap.focused?.label?.contains(arg, ignoreCase = true) == true
+
+                // Source-content predicates — indispensable for confirming
+                // refactor outcomes like "rename took effect". They look at
+                // `editorCode.visibleText`, which is a ~50-line window around
+                // the caret (see UiExecutor.getEditorContext). Callers who
+                // need to check text that's off-screen should either
+                // MoveCaret to the region first, or use the file_* predicates
+                // below which scan the whole document.
+                "source_contains" ->
+                    arg.isNotBlank() && visibleSource.contains(arg)
+                "source_absent" ->
+                    arg.isNotBlank() && !visibleSource.contains(arg)
+                "line_contains" -> {
+                    // Form: line_contains:<line>:<text>
+                    val parts = arg.split(":", limit = 2)
+                    val lineNum = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                    val needle = parts.getOrNull(1)?.trim().orEmpty()
+                    if (lineNum == null || needle.isBlank() || editorCode == null) {
+                        false
+                    } else {
+                        // editorCode's visibleText is the source window starting
+                        // at `windowStartLine` (0-based). LLM speaks in 1-based
+                        // line numbers, so translate.
+                        val lines = visibleSource.lines()
+                        val offset = lineNum - 1 - editorCode.windowStartLine
+                        val line = lines.getOrNull(offset)
+                        line != null && line.contains(needle)
+                    }
+                }
+
+                // Full-document predicates — essential for refactors that
+                // change code FAR from the caret. After `Change Signature`
+                // the caret stays on the original call site, so the
+                // modified method declaration (often hundreds of lines
+                // away) never shows up in Visible Source. These scan the
+                // entire open document so the LLM can confirm the edit
+                // landed without having to navigate first.
+                "file_contains" ->
+                    arg.isNotBlank() && fullDocumentText?.contains(arg) == true
+                "file_absent" ->
+                    arg.isNotBlank() && fullDocumentText?.let { !it.contains(arg) } == true
+
+                else -> labels.any { it.label.contains(p, ignoreCase = true) }
+            }
+
+        // Distinguish "predicate evaluated to false" from "predicate
+        // couldn't be evaluated at all": the LLM must NOT interpret a
+        // document-fetch failure as "the refactor didn't apply" (that
+        // sent session 21-34-01 into a 5-iteration verify loop). Surface
+        // it explicitly so the next turn can choose a different predicate
+        // instead of re-triggering the refactor.
+        val isFilePredicate = kind == "file_contains" || kind == "file_absent"
+        val fileFetchFailed = isFilePredicate && fullDocumentText == null
+        return when {
+            ok ->
+                ActionResult(true, "Verified predicate '${action.predicate}'")
+            fileFetchFailed ->
+                ActionResult(
+                    false,
+                    "Predicate '${action.predicate}' could not be evaluated " +
+                        "— full document text is unavailable (no focused editor, or a modal " +
+                        "dialog is still on top). Try a `source_contains` / `source_absent` " +
+                        "predicate after MoveCaret brings the target into the Visible Source " +
+                        "window, or use a UI-surface predicate like `context=EDITOR` to confirm " +
+                        "the dialog closed. This is NOT evidence that the edit failed.",
+                )
+            else ->
+                ActionResult(false, "Predicate failed: '${action.predicate}'")
+        }
+    }
+
     /**
      * Find an element by its label in the current observation.
      */
@@ -526,22 +971,48 @@ Return JSON:
         goal: String = "",
         preClickPopupCount: Int = 0,
     ): ToolResponseAnalysis {
-        val allComponents = if (uiTree != null) UiTreeParser.flatten(uiTree) else emptyList()
+        val safeTree = uiTree ?: emptyList()
+        val allComponents = UiTreeParser.flatten(safeTree)
 
-        // Programmatic detection first
-        val hasDialog = allComponents.any { profile.isDialog(it.cls) }
+        // Canonical snapshot is the source of truth for "what's on screen":
+        // reuses the same inline-widget / popup / dialog classifier as the
+        // agent loop, so this analyzer and the next decision prompt never
+        // disagree about the UI state. Fetch editor code too — the inline
+        // rename detector needs `selectedText` to recognise the template
+        // when the suggestion popup's JBList isn't classified. Passing the
+        // tree causes the helper to skip the `callJs` round-trip when a
+        // modal dialog is open (see `fetchEditorCodeSafely` docstring for
+        // the Remote Robot dispatch-queue wedging this prevents).
+        val editorCode = fetchEditorCodeSafely(safeTree)
+        val snapshot = ScopedSnapshotBuilder.buildCompactSnapshot(safeTree, profile, editorCode)
+        val hasInlineWidget = snapshot.inlineWidget != null
+
+        // Dialog detection MUST agree with the compact snapshot — otherwise
+        // the post-click analyzer emits FAIL/DISMISSED even though the main
+        // agent loop correctly sees the dialog. That exact split is what
+        // caused Change Signature clicks to be flagged as "Menu dismissed"
+        // in session 21-20-21: `profile.isDialog` didn't know about
+        // `DialogRootPane` / `MyDialog`, but `ScopedSnapshotBuilder.isDialog`
+        // has a name-based fallback that did. Using the snapshot's own
+        // window stack unifies the two paths.
+        val hasDialog =
+            snapshot.windowStack.any { it.type == ScopedSnapshotBuilder.ActiveContext.DIALOG } ||
+                allComponents.any { profile.isDialog(it.cls) }
+        // Legacy `hasInline` kept as a weaker fallback for the prompt text —
+        // the authoritative signal is `hasInlineWidget` above.
         val hasInline =
-            allComponents.any {
-                profile.isEditor(it.cls) && allComponents.any { profile.isPopupWindow(it.cls) }
-            }
+            hasInlineWidget ||
+                allComponents.any {
+                    profile.isEditor(it.cls) && allComponents.any { profile.isPopupWindow(it.cls) }
+                }
         val hasPopupList =
             allComponents.any {
                 profile.isList(it.cls) || profile.isTable(it.cls) || profile.isTree(it.cls)
             }
-        val popupCount = ScopedSnapshotBuilder.popupCount(uiTree ?: emptyList())
+        val popupCount = ScopedSnapshotBuilder.popupCount(safeTree)
 
         // Get menu items for context
-        val allMenuItems = ScopedSnapshotBuilder.forAllPopupsStructured(uiTree ?: emptyList())
+        val allMenuItems = ScopedSnapshotBuilder.forAllPopupsStructured(safeTree)
         val menuItemLabels = allMenuItems.map { it.label }.take(20)
 
         // Submenu guard: if new popups appeared AND menu items are visible,
@@ -552,9 +1023,55 @@ Return JSON:
 
         // Debug logging
         println(
-            "    UI State: $popupCount popups (was $preClickPopupCount), hasDialog=$hasDialog, hasInline=$hasInline" +
+            "    UI State: $popupCount popups (was $preClickPopupCount), hasDialog=$hasDialog, " +
+                "hasInlineWidget=$hasInlineWidget (snapshot), hasInline=$hasInline" +
                 " (pre-existing=$inlineIsProbablyPreExisting), hasPopup=$hasPopupList, menuItems=${allMenuItems.size}",
         )
+
+        // ── Structured short-circuits ──────────────────────────────────────
+        //
+        // When the compact snapshot has already identified an inline widget or
+        // a dialog, we skip the LLM classifier entirely. Asking the LLM again
+        // is strictly harmful here — the detector looks at the whole tree with
+        // deterministic rules, the LLM only sees a truncated flattening and
+        // can (and did, session 18-52-18) hallucinate "DISMISSED".
+        if (hasInlineWidget && !inlineIsProbablyPreExisting) {
+            val widget = snapshot.inlineWidget!!
+            val suggestions =
+                if (widget.suggestions.isNotEmpty()) {
+                    " (suggestions: ${widget.suggestions.take(3).joinToString(", ")})"
+                } else {
+                    ""
+                }
+            val desc =
+                "Inline ${widget.kind} widget is active for '${widget.oldIdentifier}'$suggestions. " +
+                    "Type the new name with clearFirst=false, then PressKey('Enter') to commit."
+            println("    → Structured detector: INLINE_WIDGET active, skipping LLM classifier")
+            return ToolResponseAnalysis(
+                stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
+                reasoning = "Compact snapshot detected an inline widget (${widget.kind}) — no LLM classification needed.",
+                availableItems = emptyList(),
+                toolResponseType = "inline",
+                confirmAction = "Enter",
+                dialogFields = emptyList(),
+                description = desc,
+            )
+        }
+        if (hasDialog) {
+            val dialogTitle =
+                snapshot.windowStack.lastOrNull { it.type == ScopedSnapshotBuilder.ActiveContext.DIALOG }?.title
+                    ?: "dialog"
+            println("    → Structured detector: DIALOG present, skipping LLM classifier")
+            return ToolResponseAnalysis(
+                stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
+                reasoning = "Compact snapshot detected dialog '$dialogTitle' — no LLM classification needed.",
+                availableItems = emptyList(),
+                toolResponseType = "dialog",
+                confirmAction = "OK",
+                dialogFields = snapshot.activeWindow.fields.map { it.label }.take(10),
+                description = "Dialog '$dialogTitle' is open; fill the fields and confirm.",
+            )
+        }
 
         // If no LLM available, use fallback analysis
         if (llm == null) {
@@ -570,17 +1087,36 @@ Return JSON:
                 .replace("{{TOOL_NAME}}", toolName)
                 .replace("{{GOAL}}", goal)
                 .replace("{{POPUP_COUNT}}", popupCount.toString())
+                .replace("{{PRE_POPUP_COUNT}}", preClickPopupCount.toString())
                 .replace("{{HAS_DIALOG}}", hasDialog.toString())
+                .replace("{{HAS_INLINE_WIDGET}}", hasInlineWidget.toString())
                 .replace("{{HAS_INLINE}}", hasInline.toString())
                 .replace("{{HAS_POPUP}}", hasPopupList.toString())
                 .replace("{{UI_SNAPSHOT}}", uiSnapshot)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from("You are a UI state analysis agent for IDE automation."),
-                UserMessage.from(prompt),
-            )
+            val systemPrompt = "You are a UI state analysis agent for IDE automation."
+            val started = System.currentTimeMillis()
+            val response =
+                llm.chat(
+                    SystemMessage.from(systemPrompt),
+                    UserMessage.from(prompt),
+                )
+            val durationMs = System.currentTimeMillis() - started
             val responseText = response.aiMessage().text()
+            promptLogger?.log(
+                context =
+                    PromptLogger.LogContext(
+                        caller = "ActionGenerator.analyzeToolResponse",
+                        intent = goal,
+                        extra = mapOf("tool" to toolName),
+                    ),
+                model = llm::class.simpleName ?: "unknown",
+                messages = PromptLogger.messages(systemPrompt, prompt),
+                rawResponse = responseText,
+                parsedResponse = responseText,
+                durationMs = durationMs,
+            )
 
             // Parse LLM response
             val stateType = extractJsonString(responseText, "state_type") ?: "unknown"
@@ -721,20 +1257,59 @@ Return JSON:
     }
 
     /**
-     * Format UI tree for LLM analysis prompt.
+     * Format UI tree for the menu-analyzer prompt.
+     *
+     * Priority: popups and dialogs come FIRST — they're where the actionable
+     * UI lives immediately after a menu click. Before this change we dumped a
+     * flattened-prefix (first 50 nodes), which on IntelliJ is guaranteed to
+     * be frame chrome (IdeFrameImpl, navigation bar, toolbar) and never
+     * reaches the popups appended later in the tree. The LLM then saw
+     * "no menu items, no dialog" and concluded DISMISSED — session
+     * 2026-04-21_18-52-18 iter 6 is exactly that bug.
      */
     private fun formatUiTreeForAnalysis(uiTree: List<UiComponent>?): String {
         if (uiTree == null || uiTree.isEmpty()) return "(empty)"
 
         val sb = StringBuilder()
-        val allComponents = UiTreeParser.flatten(uiTree).take(50) // Limit for token efficiency
+        val all = UiTreeParser.flatten(uiTree)
 
-        for (component in allComponents) {
-            val label = component.label.ifBlank { component.accessibleName.ifBlank { component.text } }
-            if (label.isNotBlank()) {
-                sb.append("- ${component.cls.take(30)}: '$label'\n")
+        // 1) Popups + dialogs: flatten each and dump its contents individually
+        //    so menu items, buttons, list rows, etc. are preserved.
+        val transient =
+            all.filter { profile.isPopupWindow(it.cls) || profile.isDialog(it.cls) }
+        if (transient.isNotEmpty()) {
+            sb.append("### Popups / dialogs (top = most recent)\n")
+            for ((idx, root) in transient.withIndex()) {
+                val kind = if (profile.isDialog(root.cls)) "DIALOG" else "POPUP"
+                val title = root.label.ifBlank { root.accessibleName.ifBlank { root.cls } }
+                sb.append("- $kind#${idx + 1}: '$title' [${root.cls}]\n")
+                UiTreeParser.flatten(listOf(root))
+                    .asSequence()
+                    .filter { it !== root }
+                    .filter { it.label.isNotBlank() && it.label != it.cls }
+                    .take(40)
+                    .forEach {
+                        val focused = if (it.focused) " (focused)" else ""
+                        sb.append("    · ${it.cls.take(30)}: '${it.label}'$focused\n")
+                    }
             }
+            sb.append('\n')
         }
+
+        // 2) Focused component anywhere (for inline-widget / editor cases where
+        //    the relevant state isn't inside a popup at all).
+        val focused = all.firstOrNull { it.focused && it.label.isNotBlank() }
+        if (focused != null) {
+            sb.append("### Focused component\n")
+            sb.append("- ${focused.cls.take(30)}: '${focused.label}'\n\n")
+        }
+
+        // 3) Lightweight chrome prefix — just enough for the LLM to orient.
+        sb.append("### Other visible nodes (prefix)\n")
+        all.asSequence()
+            .filter { it.label.isNotBlank() }
+            .take(25)
+            .forEach { sb.append("- ${it.cls.take(30)}: '${it.label}'\n") }
 
         return sb.toString().ifBlank { "(no visible labels)" }
     }
@@ -782,5 +1357,60 @@ Return JSON:
         val arrayContent = match.groupValues[1]
         val itemPattern = Regex(""""([^"]*)"""")
         return itemPattern.findAll(arrayContent).map { it.groupValues[1] }.toList()
+    }
+
+    /**
+     * Fetch live editor code context (caret, selection, visible source) via
+     * the JS bridge. Returns `null` on any failure so callers don't have to
+     * guard — a null `editorCode` degrades gracefully (inline-widget
+     * detection just loses one of its three signals).
+     *
+     * Mirrors the conversion logic in `UiAgent.runTask`; we intentionally
+     * keep both copies tight rather than moving the mapping into `UiExecutor`
+     * because `ScopedSnapshotBuilder.EditorCode` belongs to the perception
+     * layer and `EditorCodeContext` belongs to the executor.
+     */
+    /**
+     * Pull the live editor window for inline-widget detection and source
+     * verification, swallowing failures so callers can keep running with
+     * `null` as "no editor context available".
+     *
+     * When [uiTreeHint] is provided and already contains a visible dialog,
+     * we skip the JS round-trip entirely. `getEditorContext` dispatches
+     * onto IntelliJ's EDT via `invokeAndWait`; modal dialogs enter a
+     * nested event loop on the EDT that, on macOS, doesn't reliably pump
+     * non-EDT `invokeAndWait` requests. The call times out client-side
+     * but the task remains stuck in Remote Robot's dispatcher — which
+     * serializes component-API requests, so a single stuck `callJs`
+     * wedges the entire `/api/tree` + `/api/component/...` queue
+     * **indefinitely**. Once poisoned, the Robot server is unresponsive
+     * even minutes later, which matches exactly what we observed after
+     * Change Signature / Find Usages clicks. Checking the tree first is
+     * cheap and eliminates the wedge.
+     *
+     * Editor code is in any case irrelevant while a modal dialog is on
+     * top — the LLM should be reading the dialog, not the source
+     * behind it — so this guard costs us nothing.
+     */
+    private fun fetchEditorCodeSafely(uiTreeHint: List<UiComponent>? = null): ScopedSnapshotBuilder.EditorCode? {
+        if (uiTreeHint != null && ScopedSnapshotBuilder.containsDialog(uiTreeHint, profile)) {
+            return null
+        }
+        return try {
+            executor.getEditorContext()?.let {
+                ScopedSnapshotBuilder.EditorCode(
+                    caretLine = it.caretLine,
+                    caretColumn = it.caretColumn,
+                    totalLines = it.totalLines,
+                    symbolUnderCaret = it.symbolUnderCaret,
+                    selectedText = it.selectedText,
+                    windowStartLine = it.windowStartLine,
+                    windowEndLine = it.windowEndLine,
+                    visibleText = it.visibleText,
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 }

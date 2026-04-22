@@ -8,6 +8,7 @@ data class UiComponent(
     val enabled: Boolean,
     val hasSubmenu: Boolean,
     val children: List<UiComponent>,
+    val focused: Boolean = false,
 ) {
     val label get() =
         when {

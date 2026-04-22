@@ -30,11 +30,12 @@ class UiAgentTest : BaseTest() {
 
     @BeforeEach
     fun setup() {
-        llm = LlmModel.create(
-            apiKey = System.getenv("LLM_API_KEY") ?: "",
-            baseUrl = System.getenv("LLM_BASE_URL") ?: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            model = System.getenv("LLM_MODEL") ?: "qwen3.5-plus",
-        )
+        llm =
+            LlmModel.create(
+                apiKey = "",
+                baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
+                model = "MiniMax-M2.5",
+            )
         profile = ApplicationProfile.loadFromFile("build/reports/app-profile.json")
             ?: ApplicationProfile(appName = "IntelliJ IDEA")
 
@@ -62,7 +63,32 @@ class UiAgentTest : BaseTest() {
         // Execute with the UI agent
         val result =
             uiAgent.execute(
-                "in file UiExecutor.kt, rename method executeRecipe to doWork",
+                "in file JoinHintsResolver.java, refactor to rename JoinHintsResolver to QueryHintResolver",
+            )
+
+        println("\n  Result: ${result.message}")
+        println("  Success: ${result.success}")
+        println("  Actions taken: ${result.actionsTaken}")
+        println("  Recipe saved: ${result.recipeSaved}")
+
+        // Assertions
+        assert(result.success) { "Rename should succeed" }
+        assert(result.actionsTaken > 0) { "Should have taken some actions" }
+        assert(result.recipeSaved) { "Should have saved a verified recipe" }
+    }
+
+    @Test
+    @DisplayName("Execute rename using UI Agent")
+    fun testChangeVisibilityWithUiAgent() {
+        println("\n=== TEST: UI Agent Rename ===\n")
+
+        // Clear any old recipes to force fresh discovery
+        uiAgent.clearRecipes()
+
+        // Execute with the UI agent
+        val result =
+            uiAgent.execute(
+                "in file JoinHintsResolver.java, Change Signature of method getNewJoinHintOptions: Private",
             )
 
         println("\n  Result: ${result.message}")
@@ -84,7 +110,8 @@ class UiAgentTest : BaseTest() {
         // Execute with the UI agent
         val result =
             uiAgent.execute(
-                "in file UiExecutor.kt, extract function from lines 149-153",
+                "" +
+                    "",
             )
 
         println("\n  Result: ${result.message}")

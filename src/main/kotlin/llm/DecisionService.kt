@@ -4,6 +4,7 @@ import dev.langchain4j.model.chat.ChatModel
 import dev.langchain4j.service.AiServices
 import dev.langchain4j.service.UserMessage
 import dev.langchain4j.service.V
+import reasoner.TreeReasoner
 
 /**
  * LangChain4j AiServices interface for structured LLM decisions.
@@ -32,7 +33,7 @@ The action object must have a "type" field (one of: open_file, move_caret, selec
         @V("uiState") uiState: String,
         @V("intent") intent: String,
         @V("actionHistory") actionHistory: String,
-    ): LLMReasoner.LLMDecisionDto
+    ): TreeReasoner.LLMDecisionDto
 
     companion object {
         fun create(chatModel: ChatModel): DecisionService {

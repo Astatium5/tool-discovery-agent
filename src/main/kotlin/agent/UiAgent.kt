@@ -1,15 +1,16 @@
 package agent
 
-import execution.ActionGenerator
+import com.intellij.openapi.diagnostic.logger
 import dev.langchain4j.model.chat.ChatModel
+import execution.ActionGenerator
 import execution.UiExecutor
-import perception.UiTreeFormatter
 import model.AgentAction
-import perception.parser.UiComponent
-import perception.parser.UiTreeParser
+import perception.UiTreeFormatter
+import perception.tree.UiComponent
+import perception.tree.UiTreeParser
 import profile.ApplicationProfile
-import llm.LLMReasoner
-import llm.LLMReasoner.*
+import reasoner.TreeReasoner
+import reasoner.TreeReasoner.*
 import recipe.RecipeRegistry
 import recipe.VerifiedRecipe
 
@@ -34,7 +35,8 @@ class UiAgent(
     private val executor: UiExecutor,
     private val uiTreeProvider: () -> List<UiComponent>,
 ) {
-    private val reasoner = LLMReasoner(llm)
+    private val log = logger<UiAgent>()
+    private val reasoner = TreeReasoner(llm)
     private val actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm)
     private val recipeRegistry = RecipeRegistry()
 
@@ -65,8 +67,7 @@ class UiAgent(
     )
 
     companion object {
-        private const val MAX_ITERATIONS = 30
-        private const val OBSERVE_DELAY_MS = 500L
+        // Uses AgentConfig for all configurable values
     }
 
     /**
@@ -80,16 +81,16 @@ class UiAgent(
      * @return The result of the execution
      */
     fun execute(intent: String): ExecutionResult {
-        println("\n=== BRAIN AGENT ===")
-        println("Intent: $intent")
+        log.info("\n=== BRAIN AGENT ===")
+        log.info("Intent: $intent")
 
         // Try to find a matching recipe
         val matchedRecipe = findMatchingRecipe(intent)
         if (matchedRecipe != null) {
-            println("  Found matching recipe: ${matchedRecipe.recipe.id}")
-            println("  Recipe has ${matchedRecipe.recipe.successfulActions.size} steps")
+            log.info("  Found matching recipe: ${matchedRecipe.recipe.id}")
+            log.info("  Recipe has ${matchedRecipe.recipe.successfulActions.size} steps")
         } else {
-            println("  No matching recipe found - will explore from scratch")
+            log.info("  No matching recipe found - will explore from scratch")
         }
 
         // Capture initial document text for diff-based completion detection
@@ -102,23 +103,34 @@ class UiAgent(
             )
 
         // Main execution loop
-        while (state.iteration < MAX_ITERATIONS && !state.failed && !state.complete) {
+        while (state.iteration < AgentConfig.maxIterations && !state.failed && !state.complete) {
             state = state.copy(iteration = state.iteration + 1)
 
-            println("\n--- Iteration ${state.iteration} ---")
+            log.info("\n--- Iteration ${state.iteration} ---")
 
             // 1. OBSERVE: Get current UI state (raw tree, no intermediate transformation)
             val uiTree = uiTreeProvider.invoke()
             val uiDescription = UiTreeFormatter.format(uiTree, profile)
+
+            // Check for context menu items via Remote Robot (HTML tree may not include popups)
+            val contextMenuItems = executor.getContextMenuItems()
+
             state.uiStateHistory.add(uiDescription)
 
-            println("  Observed UI tree with ${uiTree.size} root components")
+            log.info("  Observed UI tree with ${uiTree.size} root components")
+            if (contextMenuItems.isNotEmpty()) {
+                log.info(
+                    "  Context menu has ${contextMenuItems.size} items: ${contextMenuItems.take(
+                        AgentConfig.maxMenuItemsPreview,
+                    ).joinToString(", ")}...",
+                )
+            }
 
             // Show recipe step info if available
             state.matchedRecipe?.let { recipe ->
                 val currentStep = recipe.getCurrentStep()
                 if (currentStep != null) {
-                    println("  Recipe Step ${recipe.currentStep + 1}/${recipe.recipe.successfulActions.size}: ${currentStep.action.type}")
+                    log.info("  Recipe Step ${recipe.currentStep + 1}/${recipe.recipe.successfulActions.size}: ${currentStep.action.type}")
                 }
             }
 
@@ -130,37 +142,73 @@ class UiAgent(
                     profile = profile,
                     actionHistory = state.actionHistory.toList(),
                     matchedRecipe = state.matchedRecipe,
+                    contextMenuItems = contextMenuItems,
                 )
 
             val decision = reasoner.decide(context)
-            println("  LLM Reasoning: ${decision.reasoning.take(200)}...")
-            println("  LLM Decision: ${describeAction(decision.action)} (confidence: ${"%.2f".format(decision.confidence)})")
+            println("  [Agent] LLM Decision: ${AgentAction.describe(decision.action)} (conf: ${"%.2f".format(decision.confidence)}, complete: ${decision.taskComplete})")
+            println("  [Agent] Reasoning: ${decision.reasoning}")
+            log.info("  LLM Reasoning: ${decision.reasoning}")
+            log.info("  LLM Decision: ${AgentAction.describe(decision.action)} (confidence: ${"%.2f".format(decision.confidence)})")
 
-            // Loop detection: same action repeated 3+ times consecutively
-            val lastActions = state.actionHistory.takeLast(3).map { describeAction(it.action) }
-            val currentAction = describeAction(decision.action)
-            if (lastActions.size == 3 && lastActions.all { it == currentAction }) {
-                println("  Loop detected: '$currentAction' repeated 3 times. Stopping.")
+            // Loop detection: same action repeated consecutively
+            val lastActions = state.actionHistory.takeLast(AgentConfig.loopDetectionThreshold).map { AgentAction.describe(it.action) }
+            val currentAction = AgentAction.describe(decision.action)
+            if (lastActions.size == AgentConfig.loopDetectionThreshold && lastActions.all { it == currentAction }) {
+                println("  [Agent] LOOP DETECTED: '$currentAction' repeated ${AgentConfig.loopDetectionThreshold} times")
+                log.warn("  Loop detected: '$currentAction' repeated ${AgentConfig.loopDetectionThreshold} times. Stopping.")
                 state = state.copy(failed = true, lastDecision = decision)
                 break
             }
 
             // Check for completion or failure
+            // First, if LLM says task_complete but action isn't Complete/Fail, execute it
+            if (decision.taskComplete && decision.action !is AgentAction.Complete && decision.action !is AgentAction.Fail) {
+                println("  [Agent] LLM says complete, executing pending action: ${AgentAction.describe(decision.action)}")
+                log.info("  LLM says task_complete, but action still pending: ${AgentAction.describe(decision.action)}")
+                // Execute the final action (e.g., PressKey("Enter")) before checking completion
+                val actionResult = actionGenerator.execute(decision.action, uiTree)
+                println("  [Agent] Final action result: ${actionResult.message}")
+                log.info("  Final Action Result: ${actionResult.message}")
+                Thread.sleep(AgentConfig.actionDelayMs)
+            }
+
             if (decision.taskComplete || decision.action is AgentAction.Complete) {
-                println("  Task marked as complete by LLM")
-                state = state.copy(complete = true, lastDecision = decision)
-                break
+                // Verify completion is actually possible (no inline refactoring, popups, etc.)
+                // Check if inline refactoring is active or popups/dialogs are open
+                val inlineRefactoringActive = executor.hasInlineRefactoringActive()
+                val uiTreeNow = uiTreeProvider.invoke()
+                val allComponents = UiTreeParser.flatten(uiTreeNow)
+                val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
+                val hasDialog = allComponents.any { profile.isDialog(it.cls) }
+                val hasEditorSelection = try { executor.hasEditorSelection() } catch (e: Exception) { false }
+
+                println("  [Agent] Completion check: inlineRefactoring=$inlineRefactoringActive, popup=$hasPopup, dialog=$hasDialog, selection=$hasEditorSelection")
+
+                if (inlineRefactoringActive || hasPopup || hasDialog || hasEditorSelection) {
+                    println("  [Agent] BLOCKED: UI state prevents completion, continuing...")
+                    log.warn("  LLM marked complete, but UI state prevents completion (inlineRefactoring=$inlineRefactoringActive, popup=$hasPopup, dialog=$hasDialog, selection=$hasEditorSelection)")
+                    // Continue loop instead of breaking - LLM needs to finish the operation
+                } else {
+                    println("  [Agent] SUCCESS: Task complete!")
+                    log.info("  Task marked as complete by LLM")
+                    state = state.copy(complete = true, lastDecision = decision)
+                    break
+                }
             }
 
             if (decision.action is AgentAction.Fail) {
-                println("  Task marked as failed by LLM")
+                println("  [Agent] FAILED: LLM marked task as failed")
+                log.warn("  Task marked as failed by LLM")
                 state = state.copy(failed = true, lastDecision = decision)
                 break
             }
 
             // 3. ACT: Execute the action
+            println("  [Agent] Executing: ${AgentAction.describe(decision.action)}")
             val actionResult = actionGenerator.execute(decision.action, uiTree)
-            println("  Action Result: ${actionResult.message}")
+            println("  [Agent] Result: ${actionResult.message}")
+            log.info("  Action Result: ${actionResult.message}")
 
             // Record in history
             state.actionHistory.add(
@@ -174,16 +222,16 @@ class UiAgent(
             // Advance recipe step if action was successful and we have a matched recipe
             if (actionResult.success && state.matchedRecipe != null) {
                 val advancedRecipe = state.matchedRecipe.advance()
-                println("  Advanced to recipe step ${advancedRecipe.currentStep + 1}")
+                log.info("  Advanced to recipe step ${advancedRecipe.currentStep + 1}")
                 state = state.copy(matchedRecipe = advancedRecipe)
             }
 
             // Wait for UI to update
-            Thread.sleep(OBSERVE_DELAY_MS)
+            Thread.sleep(AgentConfig.actionDelayMs)
 
             // Check for diff-based completion (source code changed and no popups open)
             if (checkDiffBasedCompletion(state)) {
-                println("  ✓ Diff-based completion detected: source code changed and no popups open")
+                log.info("  ✓ Diff-based completion detected: source code changed and no popups open")
                 state = state.copy(complete = true, lastDecision = decision)
                 break
             }
@@ -198,8 +246,14 @@ class UiAgent(
 
     /**
      * Find a matching recipe for the given intent.
+     * Only returns recipes if useRecipes config is enabled.
      */
     private fun findMatchingRecipe(intent: String): MatchedRecipe? {
+        if (!AgentConfig.useRecipes) {
+            log.info("  Recipe matching disabled (useRecipes=false)")
+            return null
+        }
+
         val matchingRecipes = recipeRegistry.findMatching(intent)
         if (matchingRecipes.isEmpty()) {
             return null
@@ -220,7 +274,8 @@ class UiAgent(
      * A task is considered complete if:
      * 1. We have initial document text captured
      * 2. The current document text differs from initial
-     * 3. No popups/dialogs are currently open
+     * 3. No popups/dialogs/inline editors are currently open
+     * 4. The editor doesn't have an active template selection (refactoring mode)
      */
     private fun checkDiffBasedCompletion(state: ExecutionState): Boolean {
         val initialText = state.initialDocumentText ?: return false
@@ -228,8 +283,22 @@ class UiAgent(
         // Get current document text
         val currentText = executor.getDocumentText() ?: return false
 
+        println("  [DEBUG] Diff check: initial=${initialText.take(50)}..., current=${currentText.take(50)}...")
+        println("  [DEBUG] Texts equal: ${currentText == initialText}")
+
         // Check if document changed
         if (currentText == initialText) {
+            println("  [DEBUG] No document change detected")
+            return false
+        }
+
+        println("  [DEBUG] Document changed! Checking for blockers...")
+
+        // Check if inline refactoring is active (prevents premature completion)
+        val inlineRefactoringActive = executor.hasInlineRefactoringActive()
+        println("  [DEBUG] inlineRefactoringActive = $inlineRefactoringActive")
+        if (inlineRefactoringActive) {
+            println("  Inline refactoring is active - preventing premature completion")
             return false
         }
 
@@ -239,29 +308,30 @@ class UiAgent(
         val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
         val hasDialog = allComponents.any { profile.isDialog(it.cls) }
 
-        // Complete if document changed and no popups/dialogs
-        return !hasPopup && !hasDialog
+        println("  [DEBUG] UI tree components: ${allComponents.map { it.cls }.distinct().take(20)}")
+        println("  [DEBUG] hasPopup = $hasPopup, hasDialog = $hasDialog")
+
+        // Check if editor has an active selection (inline refactoring mode)
+        // When refactoring is active (Shift+F6, etc), the symbol is selected/highlighted
+        val hasEditorSelection = checkEditorHasSelection()
+        println("  [DEBUG] hasEditorSelection = $hasEditorSelection")
+
+        // Complete if document changed and no popups/dialogs/selection/template
+        val canComplete = !hasPopup && !hasDialog && !hasEditorSelection
+        println("  [DEBUG] canComplete = $canComplete")
+        return canComplete
     }
 
     /**
-     * Describe an action for logging.
+     * Check if the editor has an active selection.
+     * During inline refactoring mode (Shift+F6, Cmd+F6, etc), the symbol is highlighted/selected.
      */
-    private fun describeAction(action: AgentAction): String {
-        return when (action) {
-            // Navigation actions
-            is AgentAction.OpenFile -> "OpenFile('${action.path}')"
-            is AgentAction.MoveCaret -> "MoveCaret('${action.symbol}')"
-            is AgentAction.SelectLines -> "SelectLines(${action.start}-${action.end})"
-            // UI interaction actions
-            is AgentAction.Click -> "Click('${action.target}')"
-            is AgentAction.Type -> "Type('${action.text}', clearFirst=${action.clearFirst})"
-            is AgentAction.PressKey -> "PressKey('${action.key}')"
-            is AgentAction.SelectDropdown -> "SelectDropdown('${action.target}', '${action.value}')"
-            is AgentAction.Wait -> "Wait('${action.elementType}')"
-            is AgentAction.UseRecipe -> "UseRecipe('${action.recipeId}')"
-            is AgentAction.Observe -> "Observe"
-            is AgentAction.Complete -> "Complete"
-            is AgentAction.Fail -> "Fail"
+    private fun checkEditorHasSelection(): Boolean {
+        return try {
+            executor.hasEditorSelection()
+        } catch (e: Exception) {
+            log.warn("  Warning: Could not check editor selection: ${e.message}")
+            false
         }
     }
 
@@ -277,28 +347,30 @@ class UiAgent(
         var recipeSaved = false
         var recipeId: String? = null
 
-        if (success && state.actionHistory.isNotEmpty()) {
+        if (success && state.actionHistory.isNotEmpty() && AgentConfig.saveRecipes) {
             // Save verified recipe
             val recipe = createRecipe(intent, state)
             recipeRegistry.register(recipe)
             recipeSaved = true
             recipeId = recipe.id
-            println("\n  ✓ Saved verified recipe: ${recipe.id}")
+            log.info("\n  ✓ Saved verified recipe: ${recipe.id}")
+        } else if (success && !AgentConfig.saveRecipes) {
+            log.info("\n  Skipping recipe save (saveRecipes=false)")
         }
 
         val message =
             when {
-                state.iteration >= MAX_ITERATIONS -> "Max iterations reached"
+                state.iteration >= AgentConfig.maxIterations -> "Max iterations reached"
                 state.failed -> "Task failed: ${state.lastDecision?.reasoning ?: "Unknown reason"}"
                 state.complete -> "Task completed successfully"
                 else -> "Unknown state"
             }
 
-        println("\n=== RESULT ===")
-        println("Success: $success")
-        println("Message: $message")
-        println("Actions taken: ${state.actionHistory.size}")
-        println("Recipe saved: $recipeSaved")
+        log.info("\n=== RESULT ===")
+        log.info("Success: $success")
+        log.info("Message: $message")
+        log.info("Actions taken: ${state.actionHistory.size}")
+        log.info("Recipe saved: $recipeSaved")
 
         return ExecutionResult(
             success = success,

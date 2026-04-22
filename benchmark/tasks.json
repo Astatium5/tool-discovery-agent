@@ -1,0 +1,204 @@
+{
+  "tasks": [
+    {
+      "taskID": "01",
+      "intent": "Rename private method completePendingCheckpoint to finalizePendingCheckpoint in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "02",
+      "intent": "Rename private method rescheduleTrigger to rescheduleCheckpointTrigger in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "03",
+      "intent": "Rename private method scheduleTriggerWithDelay to scheduleDelayedTrigger in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "04",
+      "intent": "Rename private method cancelPeriodicTrigger to cancelScheduledTrigger in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "05",
+      "intent": "Rename private method legacyTransform to transformLegacyNode in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "06",
+      "intent": "Rename private method translate to translateTransformation in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "07",
+      "intent": "Change Signature of private method cancelPeriodicTrigger: add parameter boolean forceCancel in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "08",
+      "intent": "Change Signature of private method rescheduleTrigger: add parameter long maxDelayMillis in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "09",
+      "intent": "Change Signature of private method scheduleTriggerWithDelay: add parameter TimeUnit timeUnit in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "10",
+      "intent": "Change Signature of private method completePendingCheckpoint: change visibility to Package-private in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "11",
+      "intent": "Change Signature of private method legacyTransform: change visibility to Package-private in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "12",
+      "intent": "Change Signature of private method getParentInputIds: add parameter boolean includeVirtualNodes in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "13",
+      "intent": "Introduce Variable for expression pendingCheckpoint.getCheckpointID() and name it checkpointId in completePendingCheckpoint method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "14",
+      "intent": "Introduce Variable for expression pendingCheckpoints.size() and name it pendingCount in abortPendingCheckpoints method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "15",
+      "intent": "Introduce Variable for expression pendingCheckpoint.getCheckpointPlan().getTasksToCommitTo() and name it tasksToCommit in completePendingCheckpoint method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "16",
+      "intent": "Introduce Variable for expression completedCheckpoint.getCheckpointID() and name it completedCheckpointId in cleanupAfterCompletedCheckpoint method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "17",
+      "intent": "Introduce Variable for expression transform.getOutputType() and name it outputType in legacyTransform method in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "18",
+      "intent": "Introduce Constant for string literal \"Stopping checkpoint coordinator for job {}.\" and name it SHUTDOWN_LOG_MESSAGE in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "19",
+      "intent": "Introduce Constant for literal Long.MAX_VALUE used for nextCheckpointTriggeringRelativeTime and name it NO_SCHEDULED_TRIGGER_TIME in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "20",
+      "intent": "Introduce Constant for string literal \"Checkpoint {} of job {} expired before completing.\" and name it CHECKPOINT_EXPIRED_LOG_MESSAGE in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "21",
+      "intent": "Introduce Constant for string literal \"Completed checkpoint {} for job {}\" and name it COMPLETED_CHECKPOINT_LOG_PREFIX in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "22",
+      "intent": "Introduce Constant for string literal \"default\" and name it DEFAULT_GROUP_NAME_LITERAL in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "23",
+      "intent": "Introduce Parameter for hardcoded log message \"Stopping checkpoint coordinator for job {}.\" and name it shutdownLogMessage in shutdown method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "24",
+      "intent": "Introduce Parameter for hardcoded TimeUnit.MILLISECONDS and name it delayUnit in scheduleTriggerWithDelay method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "25",
+      "intent": "Introduce Parameter for hardcoded checkpointProperties field and name it defaultProperties in triggerCheckpoint method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "26",
+      "intent": "Introduce Parameter for hardcoded triggerDelay field and name it initialDelay in startCheckpointScheduler method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "27",
+      "intent": "Introduce Parameter for hardcoded clock.relativeTimeMillis() call and name it currentRelativeTimeSupplier in startCheckpointScheduler method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "28",
+      "intent": "Introduce Functional Parameter for lambda that filters checkpointToFailPredicate and name it checkpointFilter in abortPendingCheckpoints method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "29",
+      "intent": "Introduce Functional Parameter for lambda that checks masterHooks.containsKey(id) and name it hookExistsCheck in addMasterHook method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "30",
+      "intent": "Introduce Functional Parameter for lambda that filters transformations and name it transformationFilter in transform method in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "31",
+      "intent": "Extract Function from lines 436-446 in shutdown method and name it cleanupMasterHooksAndAbort in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "32",
+      "intent": "Extract Function from lines 350-360 in constructor and name it initializeCheckpointStorage in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "33",
+      "intent": "Extract Function from lines 362-369 in constructor and name it startCheckpointIdCounter in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "34",
+      "intent": "Extract Function from lines 1382-1395 in completePendingCheckpoint method and name it reportAndCleanupCheckpoint in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "35",
+      "intent": "Extract Function from lines 1368-1380 in completePendingCheckpoint method and name it finalizeAndStoreCheckpoint in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "36",
+      "intent": "Extract Function from lines 254-258 in generate method and name it configureAndInitializeStreamGraph in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "37",
+      "intent": "Extract Function from lines 260-265 in generate method and name it transformAllTransformations in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "38",
+      "intent": "Extract Function from lines 281-292 in generate method and name it setupDistributedCache in StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "39",
+      "intent": "Extract Interface with methods addMasterHook and getNumberOfRegisteredMasterHooks and name it MasterHookRegistry from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "40",
+      "intent": "Extract Interface with methods isShutdown and shutdown and name it ShutdownCapable from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "41",
+      "intent": "Extract Interface with method generate and name it GraphGenerator from StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "42",
+      "intent": "Extract Interface with methods triggerCheckpoint and triggerSavepoint and name it CheckpointTrigger from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "43",
+      "intent": "Extract Superclass with methods shutdown and isShutdown and name it AbstractCheckpointCoordinator from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "44",
+      "intent": "Extract Superclass with method getNumberOfRegisteredMasterHooks and name it CheckpointCoordinatorBase from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "45",
+      "intent": "Extract Superclass with methods generate and setSlotSharingGroupResource and name it AbstractStreamGraphGenerator from StreamGraphGenerator.java"
+    },
+    {
+      "taskID": "46",
+      "intent": "Extract Superclass with methods addMasterHook and getNumberOfRegisteredMasterHooks and name it MasterHookCoordinator from CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "47",
+      "intent": "Inline Function for private method cancelPeriodicTrigger into all its call sites and remove the method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "48",
+      "intent": "Inline Function for private method rescheduleTrigger into all its call sites and remove the method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "49",
+      "intent": "Inline Function for private method scheduleTriggerWithDelay into all its call sites and remove the method in CheckpointCoordinator.java"
+    },
+    {
+      "taskID": "50",
+      "intent": "Inline Function for private method getParentInputIds into all its call sites and remove the method in StreamGraphGenerator.java"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-package perception.parser
+package perception.tree
 
 data class UiComponent(
     val cls: String,

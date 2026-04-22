@@ -1,14 +1,16 @@
-package llm
+package reasoner
 
-import perception.UiTreeFormatter
-import dev.langchain4j.model.chat.ChatModel
+import agent.AgentConfig.maxResponsePreviewLength
+import com.intellij.openapi.diagnostic.logger
 import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
+import dev.langchain4j.model.chat.ChatModel
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import model.AgentAction
-import perception.parser.UiComponent
+import perception.UiTreeFormatter
+import perception.tree.UiComponent
 import profile.ApplicationProfile
 import recipe.VerifiedRecipe
 
@@ -24,7 +26,9 @@ import recipe.VerifiedRecipe
  * The LLM acts as a developer at the keyboard, reading the screen
  * and deciding what to do next.
  */
-class LLMReasoner(private val llm: ChatModel) {
+class TreeReasoner(private val llm: ChatModel) {
+    private val log = logger<TreeReasoner>()
+
     /**
      * A decision made by the LLM.
      */
@@ -47,6 +51,7 @@ class LLMReasoner(private val llm: ChatModel) {
         val actionHistory: List<HistoryEntry>,
         val matchedRecipe: MatchedRecipe? = null, // Full recipe with step tracking
         val parsedIntent: ParsedIntent? = null, // Extracted parameters from intent
+        val contextMenuItems: List<String> = emptyList(), // Items from open context menu (via Remote Robot)
     )
 
     /**
@@ -141,6 +146,8 @@ class LLMReasoner(private val llm: ChatModel) {
 
 {{PARSED_PARAMS}}
 
+{{ACHIEVED_STATES}}
+
 ## Current UI State
 {{UI_STATE}}
 
@@ -191,18 +198,32 @@ class LLMReasoner(private val llm: ChatModel) {
 2. **MoveCaret** or **SelectLines** - Position cursor on target
 3. **PressKey("context_menu")** - Open right-click menu
 4. **Click("Refactor")** - Navigate to submenu (if needed)
-5. **Click("Rename...")** - Click the tool
+5. **Click("Rename...")** - Click the rename tool (label may be "Rename..." or "Rename…")
 6. **Wait("text_field")** - Wait for input field
-7. **Type** - Enter new value
-8. **PressKey("Enter")** - Confirm
+7. **Type** - Enter new value (the old name is pre-selected, just type)
+8. **PressKey("Enter")** - Confirm the rename
+
+**IMPORTANT**: When using Shift+F6 shortcut for rename, you MUST:
+1. PressKey("Shift+F6") - Opens inline rename editor
+2. Type("newName") - Type the new name immediately after
+3. PressKey("Enter") - Confirm the rename
+Do NOT mark task_complete after just pressing Shift+F6! The rename is NOT done until you type the new name and press Enter.
+
+**CRITICAL: Context Menu Behavior**
+- If you just opened a context menu (PressKey("context_menu")), the next action MUST be Click on a menu item
+- DO NOT use keyboard shortcuts (Shift+F6, etc.) while a context menu is open - they will NOT work
+- If you cannot see menu items in the UI tree, use Observe to refresh, then Click
+- To dismiss a context menu, use PressKey("Escape"), then try another approach
+- Context menus show items like: "Copy", "Paste", "Refactor", "Rename...", etc.
 
 ## Rules
 
 1. NAVIGATE FIRST: If the task mentions a file, use OpenFile
 2. POSITION CURSOR: Use MoveCaret or SelectLines for specific targets
 3. USE CONTEXT MENU: PressKey("context_menu") then Click menu items - this is more reliable than keyboard shortcuts
-4. VERIFY EACH STEP: Check that the expected result happened
-5. VERIFY COMPLETION: Before marking Complete, verify the task succeeded
+4. NO SHORTCUTS IN MENUS: Never use keyboard shortcuts when a menu/popup is open
+5. VERIFY EACH STEP: Check that the expected result happened
+6. VERIFY COMPLETION: Before marking Complete, verify the task succeeded (e.g., new name appears in code, no rename popup visible)
 
 Return JSON (only JSON, no other text):
 {
@@ -235,13 +256,17 @@ Return JSON (only JSON, no other text):
         val prompt = buildPrompt(context)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from("You are an expert developer using IntelliJ IDEA."),
-                UserMessage.from(prompt),
-            )
-            parseDecision(response.aiMessage().text())
+            val response =
+                llm.chat(
+                    SystemMessage.from("You are an expert developer using IntelliJ IDEA."),
+                    UserMessage.from(prompt),
+                )
+            val responseText = response.aiMessage().text()
+            log.debug("  TreeReasoner: LLM response (${responseText.length} chars)")
+            log.debug("  Full response:\n$responseText")
+            parseDecision(responseText)
         } catch (e: Exception) {
-            println("  LLMReasoner: LLM call failed, returning Observe action: ${e.message}")
+            log.warn("  TreeReasoner: LLM call failed, returning Observe action: ${e.message}")
             Decision(
                 reasoning = "LLM call failed, observing current state",
                 action = AgentAction.Observe,
@@ -266,10 +291,13 @@ Return JSON (only JSON, no other text):
                 }
             } ?: ""
 
+        val achievedStatesSection = "No states achieved yet."
+
         return DECISION_PROMPT
             .replace("{{INTENT}}", context.intent)
             .replace("{{PARSED_PARAMS}}", paramsSection)
-            .replace("{{UI_STATE}}", formatUIState(context.uiTree, context.profile))
+            .replace("{{ACHIEVED_STATES}}", achievedStatesSection)
+            .replace("{{UI_STATE}}", formatUIState(context.uiTree, context.profile, context.contextMenuItems))
             .replace("{{ACTION_HISTORY}}", formatActionHistory(context.actionHistory))
             .replace("{{RECIPE_SECTION}}", formatRecipeSection(context.matchedRecipe))
     }
@@ -338,13 +366,25 @@ Use the available primitive actions and observe the UI after each action."""
 
     /**
      * Format the UI state for the prompt using direct tree formatting.
-     * No intermediate UIObservation - format UiComponent tree directly.
+     * Uses formatFocused to focus on active dialog/popup when present.
+     * Also includes context menu items if detected via Remote Robot.
      */
     private fun formatUIState(
         uiTree: List<UiComponent>,
         profile: ApplicationProfile,
+        contextMenuItems: List<String>,
     ): String {
-        return UiTreeFormatter.format(uiTree, profile)
+        val baseState = UiTreeFormatter.formatFocused(uiTree, profile)
+
+        // Add context menu items section if detected
+        if (contextMenuItems.isNotEmpty()) {
+            return baseState + "\n### Context Menu Items (visible popup)\n" +
+                "The following items are available in the context menu:\n" +
+                contextMenuItems.joinToString("\n") { "- $it" } + "\n" +
+                "**IMPORTANT**: Click one of these items, do NOT use keyboard shortcuts!\n"
+        }
+
+        return baseState
     }
 
     /**
@@ -360,33 +400,11 @@ Use the available primitive actions and observe the UI after each action."""
 
         for ((index, entry) in history.takeLast(10).withIndex()) {
             val status = if (entry.success) "✓" else "✗"
-            sb.append("$status ${index + 1}. ${describeAction(entry.action)}\n")
+            sb.append("$status ${index + 1}. ${AgentAction.describe(entry.action)}\n")
             sb.append("   Result: ${entry.result}\n")
         }
 
         return sb.toString()
-    }
-
-    /**
-     * Describe an action for the history.
-     */
-    private fun describeAction(action: AgentAction): String {
-        return when (action) {
-            // Navigation actions
-            is AgentAction.OpenFile -> "Open file '${action.path}'"
-            is AgentAction.MoveCaret -> "Move caret to '${action.symbol}'"
-            is AgentAction.SelectLines -> "Select lines ${action.start}-${action.end}"
-            // UI interaction actions
-            is AgentAction.Click -> "Click on '${action.target}'"
-            is AgentAction.Type -> "Type '${action.text}' (clearFirst=${action.clearFirst})"
-            is AgentAction.PressKey -> "Press ${action.key}"
-            is AgentAction.SelectDropdown -> "Select '${action.value}' from '${action.target}'"
-            is AgentAction.Wait -> "Wait for ${action.elementType}"
-            is AgentAction.UseRecipe -> "Use recipe '${action.recipeId}'"
-            is AgentAction.Observe -> "Observe UI state"
-            is AgentAction.Complete -> "Task complete"
-            is AgentAction.Fail -> "Task failed"
-        }
     }
 
     // ── Structured JSON Parsing with kotlinx.serialization ─────────────────────
@@ -428,9 +446,6 @@ Use the available primitive actions and observe the UI after each action."""
         @SerialName("elementType")
         val elementType: String? = null,
         val timeout: Long? = null,
-        @SerialName("recipeId")
-        val recipeId: String? = null,
-        val params: Map<String, String>? = null,
     ) {
         /**
          * Convert DTO to domain AgentAction.
@@ -463,11 +478,6 @@ Use the available primitive actions and observe the UI after each action."""
                     AgentAction.Wait(
                         elementType = elementType ?: "dialog",
                         timeoutMs = timeout ?: 5000,
-                    )
-                "use_recipe" ->
-                    AgentAction.UseRecipe(
-                        recipeId = recipeId ?: "",
-                        params = params ?: emptyMap(),
                     )
                 // Control actions
                 "observe" -> AgentAction.Observe
@@ -509,8 +519,8 @@ Use the available primitive actions and observe the UI after each action."""
                 taskComplete = dto.taskComplete,
             )
         } catch (e: Exception) {
-            println("  LLMReasoner: Failed to parse LLM response: ${e.message}")
-            println("  Response preview: ${response.take(500)}")
+            log.warn("  TreeReasoner: Failed to parse LLM response: ${e.message}")
+            log.debug("  Response preview: ${response.take(maxResponsePreviewLength)}")
 
             // Return Observe action on parse failure
             Decision(

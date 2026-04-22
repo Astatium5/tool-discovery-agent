@@ -1,13 +1,21 @@
 package execution
 
+import agent.AgentConfig.actionDelayMs
+import agent.AgentConfig.contextMenuDelayMs
+import agent.AgentConfig.menuClickDelayMs
+import agent.AgentConfig.retryDelayMs
+import agent.AgentConfig.robotTimeoutSeconds
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.remoterobot.RemoteRobot
 import com.intellij.remoterobot.fixtures.ComponentFixture
 import com.intellij.remoterobot.search.locators.byXpath
 import com.intellij.remoterobot.utils.keyboard
 import model.RecipeStep
-import perception.parser.HtmlUiTreeProvider
-import perception.parser.UiComponent
-import perception.parser.UiTreeProvider
+import perception.tree.HtmlUiTreeProvider
+import perception.tree.UiComponent
+import perception.tree.UiTreeParser
+import perception.tree.UiTreeProvider
+import vision.ElementInfo
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.time.Duration
@@ -15,15 +23,31 @@ import java.time.Duration
 /**
  * Translates RecipeStep sequences into actual RemoteRobot interactions.
  * Extracted from the hardcoded patterns in RenameRefactorTest.
+ *
+ * Also supports vision-based operations (ClickElement, etc) when elementMap is provided.
  */
 class UiExecutor(
     private val robot: RemoteRobot,
     private val treeProvider: UiTreeProvider = HtmlUiTreeProvider(),
+    elementMap: Map<Int, ElementInfo>? = null,
 ) {
-    private val defaultTimeout = Duration.ofSeconds(10)
+    private val log = logger<UiExecutor>()
+    private val defaultTimeout = Duration.ofSeconds(robotTimeoutSeconds)
+    private val awtRobot = java.awt.Robot()
 
     // Track the currently open file for context discovery
     var currentFilePath: String? = null
+
+    // Mutable elementMap for vision-based coordinate clicking (can be updated during execution)
+    private var elementMap: Map<Int, ElementInfo>? = elementMap
+
+    /**
+     * Update the element map for coordinate-based clicking.
+     * Called by VisionAgent before each action with the latest screenshot's element map.
+     */
+    fun setElementMap(newElementMap: Map<Int, ElementInfo>) {
+        this.elementMap = newElementMap
+    }
 
     data class ScreenCoords(val x: Int, val y: Int)
 
@@ -34,12 +58,12 @@ class UiExecutor(
      */
     fun executeRecipe(steps: List<RecipeStep>): Boolean {
         for ((i, step) in steps.withIndex()) {
-            println("  [Step ${i + 1}/${steps.size}] ${RecipeStep.describe(step)}")
+            log.info("  [Step ${i + 1}/${steps.size}] ${step.describe()}")
             try {
                 executeStep(step)
-                Thread.sleep(300)
+                Thread.sleep(retryDelayMs)
             } catch (e: Exception) {
-                println("  FAILED at step ${i + 1}: ${e.message}")
+                log.warn("  FAILED at step ${i + 1}: ${e.message}")
                 dismissPopups()
                 return false
             }
@@ -72,11 +96,15 @@ class UiExecutor(
             is RecipeStep.ClickDialogButton -> clickDialogButton(step.label)
             is RecipeStep.PressKey -> pressKey(step.key)
             is RecipeStep.CancelDialog -> pressEscape()
-            // Field Navigation steps (new in declarative model)
+            // Field Navigation steps
             is RecipeStep.FocusField -> focusField(step.fieldLabel)
             is RecipeStep.SelectDropdownField -> selectDropdownField(step.fieldLabel, step.value)
             is RecipeStep.SetCheckbox -> setCheckbox(step.fieldLabel, step.checked)
             is RecipeStep.TableRowAction -> tableRowAction(step.action, step.rowIndex)
+            // Vision-based steps (coordinate clicking)
+            is RecipeStep.ClickElement -> clickElementByCoordinate(step.elementId)
+            is RecipeStep.DoubleClickElement -> doubleClickElementByCoordinate(step.elementId)
+            is RecipeStep.RightClickElement -> rightClickElementByCoordinate(step.elementId)
         }
     }
 
@@ -97,18 +125,20 @@ class UiExecutor(
             } ?: editors.firstOrNull()
                 ?: throw IllegalStateException("No editor component found")
         editor.click()
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
     fun moveCaret(symbol: String) {
         val editor = findFocusedEditor()
+
+        log.debug("  moveCaret: Looking for '$symbol' in editor...")
 
         val offsetResult =
             editor.callJs<String>(
                 """
                 var doc = component.getDocument();
                 var fullText = doc.getText(0, doc.getLength());
-                var idx = fullText.indexOf('$symbol');
+                var idx = fullText.indexOf('${jsEscape(symbol)}');
                 if (idx < 0) {
                     'NOT_FOUND';
                 } else {
@@ -133,10 +163,13 @@ class UiExecutor(
                 """.trimIndent(),
             )
 
+        log.debug("  moveCaret result: $offsetResult")
+
         if (offsetResult == "NOT_FOUND") {
             throw IllegalStateException("Symbol '$symbol' not found in editor")
         }
-        Thread.sleep(500)
+
+        Thread.sleep(retryDelayMs / 2)
     }
 
     fun selectLines(
@@ -169,78 +202,322 @@ class UiExecutor(
             'OK';
             """.trimIndent(),
         )
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
     fun pressShortcut(keys: String) {
-        val keyCodes = parseShortcutKeys(keys)
-        val awtRobot = java.awt.Robot()
+        // Ensure the editor has focus before pressing shortcut.
+        try {
+            val editors = robot.findAll<ComponentFixture>(byXpath("//div[@class='EditorComponentImpl']"))
+            val editor =
+                editors.firstOrNull { comp ->
+                    try {
+                        comp.callJs<Boolean>("component.hasFocus()")
+                    } catch (_: Exception) {
+                        false
+                    }
+                } ?: editors.firstOrNull()
 
-        val modifiers = keyCodes.dropLast(1)
-        val mainKey = keyCodes.last()
+            if (editor != null) {
+                log.debug("    pressShortcut: Requesting editor focus (caret preserved)")
+                editor.callJs<String>(
+                    """
+                    com.intellij.openapi.application.ApplicationManager
+                        .getApplication().invokeAndWait(new Runnable() {
+                            run: function() { component.requestFocus(); }
+                        });
+                    'ok';
+                    """.trimIndent(),
+                )
+                Thread.sleep(retryDelayMs / 3)
+            } else {
+                val ideFrame =
+                    robot.find<ComponentFixture>(
+                        byXpath("//div[@class='IdeFrameImpl']"),
+                        Duration.ofSeconds(2),
+                    )
+                log.debug("    pressShortcut: No editor found, clicking IDE frame")
+                ideFrame.click()
+                Thread.sleep(retryDelayMs)
+            }
+        } catch (e: Exception) {
+            log.debug("    pressShortcut: Could not focus editor/frame, proceeding anyway")
+        }
 
-        modifiers.forEach { awtRobot.keyPress(it) }
-        Thread.sleep(50)
-        awtRobot.keyPress(mainKey)
-        Thread.sleep(50)
-        awtRobot.keyRelease(mainKey)
-        modifiers.reversed().forEach { awtRobot.keyRelease(it) }
-        Thread.sleep(500)
+        val parts = keys.split("+").map { it.trim() }
+        log.debug("    pressShortcut: Parsing '$keys' -> parts: $parts")
+
+        // Separate modifiers from main key
+        val modifierNames = parts.dropLast(1)
+        val mainKeyName = parts.last()
+
+        log.debug("    pressShortcut: Modifiers: $modifierNames, Main key: $mainKeyName")
+
+        // Use Remote Robot's keyboard API with pressing() for modifiers
+        robot.keyboard {
+            // Build nested pressing() calls for each modifier
+            when (modifierNames.size) {
+                0 -> key(keyNameToKeyCode(mainKeyName))
+                1 -> pressing(keyNameToKeyCode(modifierNames[0])) { key(keyNameToKeyCode(mainKeyName)) }
+                2 ->
+                    pressing(keyNameToKeyCode(modifierNames[0])) {
+                        pressing(keyNameToKeyCode(modifierNames[1])) { key(keyNameToKeyCode(mainKeyName)) }
+                    }
+                3 ->
+                    pressing(keyNameToKeyCode(modifierNames[0])) {
+                        pressing(keyNameToKeyCode(modifierNames[1])) {
+                            pressing(keyNameToKeyCode(modifierNames[2])) { key(keyNameToKeyCode(mainKeyName)) }
+                        }
+                    }
+                else -> {
+                    log.debug("    pressShortcut: Too many modifiers (${modifierNames.size}), falling back to simple key")
+                    key(keyNameToKeyCode(mainKeyName))
+                }
+            }
+        }
+
+        Thread.sleep(menuClickDelayMs)
+        log.debug("    pressShortcut: Shortcut '$keys' executed via Remote Robot")
+    }
+
+    private fun keyNameToKeyCode(name: String): Int {
+        return when (name.lowercase()) {
+            "cmd", "meta", "command" -> KeyEvent.VK_META
+            "ctrl", "control" -> KeyEvent.VK_CONTROL
+            "alt", "option" -> KeyEvent.VK_ALT
+            "shift" -> KeyEvent.VK_SHIFT
+            "enter", "return" -> KeyEvent.VK_ENTER
+            "escape", "esc" -> KeyEvent.VK_ESCAPE
+            "tab" -> KeyEvent.VK_TAB
+            "delete", "backspace" -> KeyEvent.VK_BACK_SPACE
+            "space" -> KeyEvent.VK_SPACE
+            "up" -> KeyEvent.VK_UP
+            "down" -> KeyEvent.VK_DOWN
+            "left" -> KeyEvent.VK_LEFT
+            "right" -> KeyEvent.VK_RIGHT
+            "f1" -> KeyEvent.VK_F1
+            "f2" -> KeyEvent.VK_F2
+            "f3" -> KeyEvent.VK_F3
+            "f4" -> KeyEvent.VK_F4
+            "f5" -> KeyEvent.VK_F5
+            "f6" -> KeyEvent.VK_F6
+            "f7" -> KeyEvent.VK_F7
+            "f8" -> KeyEvent.VK_F8
+            "f9" -> KeyEvent.VK_F9
+            "f10" -> KeyEvent.VK_F10
+            "f11" -> KeyEvent.VK_F11
+            "f12" -> KeyEvent.VK_F12
+            "a" -> KeyEvent.VK_A
+            "b" -> KeyEvent.VK_B
+            "c" -> KeyEvent.VK_C
+            "d" -> KeyEvent.VK_D
+            "e" -> KeyEvent.VK_E
+            "f" -> KeyEvent.VK_F
+            "g" -> KeyEvent.VK_G
+            "h" -> KeyEvent.VK_H
+            "i" -> KeyEvent.VK_I
+            "j" -> KeyEvent.VK_J
+            "k" -> KeyEvent.VK_K
+            "l" -> KeyEvent.VK_L
+            "m" -> KeyEvent.VK_M
+            "n" -> KeyEvent.VK_N
+            "o" -> KeyEvent.VK_O
+            "p" -> KeyEvent.VK_P
+            "q" -> KeyEvent.VK_Q
+            "r" -> KeyEvent.VK_R
+            "s" -> KeyEvent.VK_S
+            "t" -> KeyEvent.VK_T
+            "u" -> KeyEvent.VK_U
+            "v" -> KeyEvent.VK_V
+            "w" -> KeyEvent.VK_W
+            "x" -> KeyEvent.VK_X
+            "y" -> KeyEvent.VK_Y
+            "z" -> KeyEvent.VK_Z
+            "context_menu" -> KeyEvent.VK_CONTEXT_MENU
+            else -> KeyEvent.getExtendedKeyCodeForChar(name.first().code)
+        }
     }
 
     fun openContextMenu() {
-        val editor = findFocusedEditor()
-        val coords = getCaretScreenCoords(editor)
-        rightClickAt(coords.x, coords.y)
-        Thread.sleep(800)
+        // VK_CONTEXT_MENU is a Windows-only key — it silently does nothing on macOS.
+        // Right-click via AWT Robot at the caret screen position is the reliable approach.
+        try {
+            val editor = findFocusedEditor()
+            val coords = getCaretScreenCoords(editor)
+            log.debug("  openContextMenu: Right-clicking at caret (${coords.x}, ${coords.y})")
+            awtRobot.mouseMove(coords.x, coords.y)
+            Thread.sleep(50)
+            awtRobot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
+            Thread.sleep(50)
+            awtRobot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK)
+            Thread.sleep(contextMenuDelayMs)
+        } catch (e: Exception) {
+            log.debug("  openContextMenu: Right-click failed (${e.message}), falling back to keyboard")
+            robot.keyboard { key(KeyEvent.VK_CONTEXT_MENU) }
+            Thread.sleep(contextMenuDelayMs)
+        }
     }
 
     fun clickMenuItem(label: String) {
-        val item =
-            try {
-                robot.find<ComponentFixture>(
-                    byXpath("(//div[@class='HeavyWeightWindow'])[last()]//div[@class='ActionMenuItem' and contains(@text, '$label')]"),
-                    Duration.ofSeconds(5),
-                )
-            } catch (_: Exception) {
-                try {
-                    robot.find<ComponentFixture>(
-                        byXpath("(//div[@class='HeavyWeightWindow'])[last()]//div[@class='ActionMenu' and contains(@text, '$label')]"),
-                        Duration.ofSeconds(3),
+        log.debug("  clickMenuItem: Looking for '$label'")
+
+        // Normalize label: handle both Unicode ellipsis (U+2026) and ASCII dots
+        val normalizedLabel = label.replace("...", "…")
+        val altLabel = label.replace("…", "...")
+
+        // Approach 1: Find JBPopupMenu items via JS
+        try {
+            log.debug("    Approach 1: Search JBPopupMenu via JavaScript")
+            val popupMenus = robot.findAll<ComponentFixture>(byXpath("//div[@class='JBPopupMenu' or @class='MyMenu']"))
+            log.debug("    Found ${popupMenus.size} popup menus")
+
+            for (pm in popupMenus.toList().reversed()) {
+                val pmY = pm.callJs<Int>("component.getLocationOnScreen().y")
+                log.debug("      PopupMenu at y=$pmY")
+                if (pmY < 100) continue
+
+                // Use JS to find matching items inside this popup
+                val jsNorm = jsEscape(normalizedLabel)
+                val jsAlt = jsEscape(altLabel)
+                val found =
+                    pm.callJs<String>(
+                        """
+                        var found = false;
+                        var children = component.getComponents();
+                        for (var i = 0; i < children.length; i++) {
+                            var c = children[i];
+                            var txt = c.getText ? (c.getText() || '') : '';
+                            if (txt.indexOf('$jsNorm') >= 0 || txt.indexOf('$jsAlt') >= 0) {
+                                found = true;
+                                break;
+                            }
+                            if (c instanceof java.awt.Container) {
+                                var nested = c.getComponents();
+                                for (var j = 0; j < nested.length; j++) {
+                                    var n = nested[j];
+                                    var ntxt = n.getText ? (n.getText() || '') : '';
+                                    if (ntxt.indexOf('$jsNorm') >= 0 || ntxt.indexOf('$jsAlt') >= 0) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        java_result = found ? 'true' : 'false';
+                        """.trimIndent(),
                     )
-                } catch (_: Exception) {
-                    robot.find<ComponentFixture>(
-                        byXpath("//div[contains(@accessiblename, '$label') and (@class='ActionMenuItem' or @class='ActionMenu')]"),
-                        Duration.ofSeconds(3),
+
+                if (found == "true") {
+                    log.debug("        Item confirmed in popup, clicking via JS doClick()")
+                    pm.callJs<String>(
+                        """
+                        com.intellij.openapi.application.ApplicationManager
+                            .getApplication().invokeAndWait(new Runnable() {
+                                run: function() {
+                                    var children = component.getComponents();
+                                    for (var i = 0; i < children.length; i++) {
+                                        var c = children[i];
+                                        var txt = c.getText ? (c.getText() || '') : '';
+                                        if (txt.indexOf('$jsNorm') >= 0 || txt.indexOf('$jsAlt') >= 0) {
+                                            c.doClick();
+                                            break;
+                                        }
+                                        if (c instanceof java.awt.Container) {
+                                            var nested = c.getComponents();
+                                            for (var j = 0; j < nested.length; j++) {
+                                                var n = nested[j];
+                                                var ntxt = n.getText ? (n.getText() || '') : '';
+                                                if (ntxt.indexOf('$jsNorm') >= 0 || ntxt.indexOf('$jsAlt') >= 0) {
+                                                    n.doClick();
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        'ok';
+                        """.trimIndent(),
                     )
+                    Thread.sleep(menuClickDelayMs)
+                    return
                 }
             }
+        } catch (e: Exception) {
+            log.debug("    Approach 1 failed: ${e.message?.take(30)}")
+        }
 
-        val coords = getComponentScreenCenter(item)
-        clickAt(coords.x, coords.y)
-        Thread.sleep(600)
+        // Approach 2: Scope search to HeavyWeightWindow
+        try {
+            log.debug("    Approach 2: ActionMenuItems inside HeavyWeightWindow (popup-scoped)")
+            val all =
+                robot.findAll<ComponentFixture>(
+                    byXpath("//div[@class='HeavyWeightWindow']//div[@class='ActionMenuItem']"),
+                )
+            log.debug("    Found ${all.size} ActionMenuItems in popup windows")
+            for (item in all.toList()) {
+                try {
+                    val itemY = item.callJs<Int>("component.getLocationOnScreen().y")
+                    val text = item.callJs<String>("component.getText() || ''")
+                    log.debug("      y=$itemY text='$text'")
+                    val baseName = normalizedLabel.trimEnd('…').trimEnd('.')
+                    if (text == normalizedLabel || text == altLabel ||
+                        (baseName.length >= 3 && text.startsWith(baseName, ignoreCase = true))
+                    ) {
+                        log.info("        Match! Clicking '$text'")
+                        item.click()
+                        Thread.sleep(menuClickDelayMs)
+                        return
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        } catch (e: Exception) {
+            log.debug("    Approach 2 failed: ${e.message?.take(30)}")
+        }
+
+        throw Exception("Could not find menu item '$label' in popup windows")
+    }
+
+    private fun debugComponent(
+        component: ComponentFixture,
+        strategy: String,
+    ) {
+        try {
+            val cls = component.callJs<String>("component.getClass().getSimpleName()")
+            val text = component.callJs<String>("component.getText()")
+            val accessibleName = component.callJs<String>("component.getAccessibleContext().getAccessibleName()")
+            val bounds =
+                component.callJs<String>(
+                    """
+                    var loc = component.getLocationOnScreen();
+                    var w = component.getWidth();
+                    var h = component.getHeight();
+                    loc.x + ',' + loc.y + ',' + w + ',' + h;
+                    """.trimIndent(),
+                )
+            log.debug("    [$strategy] Found: class='$cls', text='$text', accessibleName='$accessibleName', bounds=$bounds")
+        } catch (e: Exception) {
+            log.debug("    [$strategy] Could not get component details: ${e.message?.take(30)}")
+        }
     }
 
     fun typeInDialog(value: String) {
-        // Brief wait for popup/inline widget to render after a menu click
-        Thread.sleep(500)
+        Thread.sleep(contextMenuDelayMs / 2)
 
         val (field, isInlineEditor) = findInputField()
 
         if (!isInlineEditor) {
-            // For popup/dialog fields, click to focus and select all existing text
             field.click()
-            Thread.sleep(100)
+            Thread.sleep(retryDelayMs / 3)
             robot.keyboard {
                 pressing(KeyEvent.VK_META) { key(KeyEvent.VK_A) }
             }
-            Thread.sleep(200)
+            Thread.sleep(retryDelayMs / 2)
         }
-        // For inline rename/extract templates the cursor is already inside the
-        // highlighted template field with the old name selected — just type.
 
         robot.keyboard { enterText(value) }
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
     /**
@@ -287,58 +564,63 @@ class UiExecutor(
                     Duration.ofSeconds(5),
                 )
             } catch (_: Exception) {
-                println("  No dropdown found, skipping selection")
+                log.debug("  No dropdown found, skipping selection")
                 return
             }
 
         // Click to open dropdown
         dropdown.click()
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
 
         // Try to find and click the option with matching text
         try {
             val option =
                 robot.find<ComponentFixture>(
-                    byXpath("//div[@visible_text='$value' or @accessiblename='$value']"),
+                    byXpath("//div[@visible_text=${xpathLiteral(value)} or @accessiblename=${xpathLiteral(value)}]"),
                     Duration.ofSeconds(2),
                 )
             option.click()
         } catch (_: Exception) {
-            // If exact match not found, try typing the value
             robot.keyboard { enterText(value) }
-            Thread.sleep(200)
+            Thread.sleep(retryDelayMs / 2)
             robot.keyboard { key(KeyEvent.VK_ENTER) }
         }
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
     fun clickDialogButton(label: String) {
+        log.debug("  clickDialogButton: Looking for '$label'")
+
         val button =
             try {
                 robot.find<ComponentFixture>(
-                    byXpath("//div[@accessiblename='$label' and @class='JButton']"),
-                    Duration.ofSeconds(5),
+                    byXpath("//div[@accessiblename=${xpathLiteral(label)} and @class='JButton']"),
+                    Duration.ofSeconds(3),
                 )
             } catch (_: Exception) {
-                robot.find<ComponentFixture>(
-                    byXpath("//div[@accessiblename='$label' and @class!='ActionMenu' and @class!='ActionMenuItem']"),
-                    Duration.ofSeconds(5),
-                )
+                try {
+                    robot.find<ComponentFixture>(
+                        byXpath("//div[@class='DialogRootPane']//div[@accessiblename=${xpathLiteral(label)}]"),
+                        Duration.ofSeconds(2),
+                    )
+                } catch (_: Exception) {
+                    robot.find<ComponentFixture>(
+                        byXpath("//div[@class='DialogRootPane']//div[contains(@text, ${xpathLiteral(label)})]"),
+                        Duration.ofSeconds(2),
+                    )
+                }
             }
 
-        val coords = getComponentScreenCenter(button)
-        clickAt(coords.x, coords.y)
-        Thread.sleep(800)
+        button.click()
+        Thread.sleep(contextMenuDelayMs)
+        log.debug("  clickDialogButton: Clicked button '$label'")
     }
 
     fun pressEscape() {
         robot.keyboard { key(KeyEvent.VK_ESCAPE) }
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
-    /**
-     * Presses a specific key by name. Supports: Enter, Escape, Tab, Backspace, Delete, etc.
-     */
     fun pressKey(keyName: String) {
         val keyCode =
             when (keyName.lowercase()) {
@@ -355,7 +637,7 @@ class UiExecutor(
                 else -> KeyEvent.VK_ENTER // Default to Enter
             }
         robot.keyboard { key(keyCode) }
-        Thread.sleep(300)
+        Thread.sleep(retryDelayMs)
     }
 
     // ── Field Navigation steps (new in declarative model) ─────────────────────
@@ -390,25 +672,30 @@ class UiExecutor(
             val field =
                 robot.find<ComponentFixture>(
                     byXpath(
-                        "$container//div[($inputFieldClasses) and (contains(@accessiblename, '$normalizedLabel') or contains(@accessiblename, '$fieldLabel'))]",
+                        "$container//div[($inputFieldClasses) and (contains(@accessiblename, ${xpathLiteral(
+                            normalizedLabel,
+                        )}) or contains(@accessiblename, ${xpathLiteral(fieldLabel)}))]",
                     ),
                     timeout,
                 )
             field.click()
-            Thread.sleep(200)
-            println("  Found field by accessible name: $fieldLabel")
+            Thread.sleep(retryDelayMs / 2)
+            log.debug("  Found field by accessible name: $fieldLabel")
             return
         } catch (_: Exception) {
         }
 
         // Strategy 2: Find label, then find the input field that follows it
-        // In IntelliJ, labels and fields are siblings in the layout
         try {
             // Find the label first
             val label =
                 robot.find<ComponentFixture>(
                     byXpath(
-                        "$container//div[@visible_text='$fieldLabel' or contains(@text, '$fieldLabel') or @visible_text='$normalizedLabel' or contains(@text, '$normalizedLabel')]",
+                        "$container//div[@visible_text=${xpathLiteral(
+                            fieldLabel,
+                        )} or contains(@text, ${xpathLiteral(
+                            fieldLabel,
+                        )}) or @visible_text=${xpathLiteral(normalizedLabel)} or contains(@text, ${xpathLiteral(normalizedLabel)})]",
                     ),
                     timeout,
                 )
@@ -418,17 +705,16 @@ class UiExecutor(
             val labelY = labelBounds.second
             val labelRight = labelBounds.first + labelBounds.third
 
-            // Find all input fields in the container (text fields, dropdowns, checkboxes)
+            // Find all input fields in the container
             val allFields =
                 robot.findAll<ComponentFixture>(
                     byXpath("$container//div[$inputFieldClasses]"),
                 )
 
-            // Find the input field that is closest to the label (same row or next row)
+            // Find the input field that is closest to the label
             val closestField =
                 allFields.minByOrNull { field ->
                     val fieldBounds = getComponentBounds(field)
-                    // Calculate distance: prefer fields on the same row, to the right of the label
                     val verticalDistance = kotlin.math.abs(fieldBounds.second - labelY)
                     val horizontalDistance =
                         if (fieldBounds.first >= labelRight) {
@@ -441,8 +727,8 @@ class UiExecutor(
 
             if (closestField != null) {
                 closestField.click()
-                Thread.sleep(200)
-                println("  Found field adjacent to label: $fieldLabel")
+                Thread.sleep(retryDelayMs / 2)
+                log.debug("  Found field adjacent to label: $fieldLabel")
                 return
             }
         } catch (_: Exception) {
@@ -453,47 +739,31 @@ class UiExecutor(
             val field =
                 robot.find<ComponentFixture>(
                     byXpath(
-                        "$container//div[($inputFieldClasses) and (contains(@text, '$normalizedLabel') or contains(@placeholder, '$normalizedLabel'))]",
+                        "$container//div[($inputFieldClasses) and (contains(@text, ${xpathLiteral(
+                            normalizedLabel,
+                        )}) or contains(@placeholder, ${xpathLiteral(normalizedLabel)}))]",
                     ),
                     timeout,
                 )
             field.click()
-            Thread.sleep(200)
-            println("  Found field by text content: $fieldLabel")
+            Thread.sleep(retryDelayMs / 2)
+            log.debug("  Found field by text content: $fieldLabel")
             return
         } catch (_: Exception) {
         }
 
-        // Fallback: Use Tab navigation from current position
-        println("  Could not find field '$fieldLabel', using Tab navigation")
-        robot.keyboard { key(KeyEvent.VK_TAB) }
-        Thread.sleep(200)
+        throw IllegalStateException("Could not find field '$fieldLabel' after all strategies")
     }
 
-    /**
-     * Select a value from a specific dropdown field by its label.
-     *
-     * @param fieldLabel The label text of the dropdown field
-     * @param value The value to select
-     */
     fun selectDropdownField(
         fieldLabel: String,
         value: String,
     ) {
-        // First focus the field
         focusField(fieldLabel)
-        Thread.sleep(100)
-
-        // Then select the value using existing dropdown logic
+        Thread.sleep(retryDelayMs / 3)
         selectDropdown(value)
     }
 
-    /**
-     * Set a checkbox to a specific state.
-     *
-     * @param fieldLabel The label text of the checkbox
-     * @param checked Whether to check or uncheck the checkbox
-     */
     fun setCheckbox(
         fieldLabel: String,
         checked: Boolean,
@@ -506,15 +776,16 @@ class UiExecutor(
             val checkbox =
                 robot.find<ComponentFixture>(
                     byXpath(
-                        "$container//div[@class='JCheckBox' and (@visible_text='$fieldLabel' or contains(@text, '$fieldLabel') or contains(@accessiblename, '$fieldLabel'))]",
+                        "$container//div[@class='JCheckBox' and (@visible_text=${xpathLiteral(
+                            fieldLabel,
+                        )} or contains(@text, ${xpathLiteral(fieldLabel)}) or contains(@accessiblename, ${xpathLiteral(fieldLabel)}))]",
                     ),
                     timeout,
                 )
-            // Check current state and toggle if needed
             val currentState = checkbox.callJs<Boolean>("component.isSelected()")
             if (currentState != checked) {
                 checkbox.click()
-                Thread.sleep(200)
+                Thread.sleep(retryDelayMs / 2)
             }
             return
         } catch (_: Exception) {
@@ -524,27 +795,21 @@ class UiExecutor(
         try {
             val checkbox =
                 robot.find<ComponentFixture>(
-                    byXpath("$container//div[@class='JCheckBox' and contains(@accessiblename, '$fieldLabel')]"),
+                    byXpath("$container//div[@class='JCheckBox' and contains(@accessiblename, ${xpathLiteral(fieldLabel)})]"),
                     timeout,
                 )
             val currentState = checkbox.callJs<Boolean>("component.isSelected()")
             if (currentState != checked) {
                 checkbox.click()
-                Thread.sleep(200)
+                Thread.sleep(retryDelayMs / 2)
             }
             return
         } catch (_: Exception) {
         }
 
-        println("  Could not find checkbox '$fieldLabel'")
+        throw IllegalStateException("Could not find checkbox '$fieldLabel'")
     }
 
-    /**
-     * Perform an action on a table editor (Add, Remove, Up, Down).
-     *
-     * @param action The action to perform (e.g., "Add", "Remove", "Up", "Down")
-     * @param rowIndex Optional row index for row-specific actions
-     */
     fun tableRowAction(
         action: String,
         rowIndex: Int?,
@@ -560,11 +825,10 @@ class UiExecutor(
                         byXpath("$container//div[@class='JBTable' or @class='JTable']"),
                         timeout,
                     )
-                // Select the row
                 table.callJs<String>("component.setRowSelectionInterval($rowIndex, $rowIndex)")
-                Thread.sleep(200)
+                Thread.sleep(retryDelayMs / 2)
             } catch (_: Exception) {
-                println("  Could not find table to select row $rowIndex")
+                log.debug("  Could not find table to select row $rowIndex")
             }
         }
 
@@ -572,28 +836,25 @@ class UiExecutor(
         try {
             val button =
                 robot.find<ComponentFixture>(
-                    byXpath("$container//div[@class='JButton' and (@visible_text='$action' or @accessiblename='$action')]"),
+                    byXpath(
+                        "$container//div[@class='JButton' and (@visible_text=${xpathLiteral(
+                            action,
+                        )} or @accessiblename=${xpathLiteral(action)})]",
+                    ),
                     timeout,
                 )
             button.click()
-            Thread.sleep(300)
+            Thread.sleep(retryDelayMs)
         } catch (_: Exception) {
-            println("  Could not find table action button '$action'")
+            log.debug("  Could not find table action button '$action'")
         }
     }
 
-    /**
-     * Types text at the current cursor position.
-     */
     fun typeText(text: String) {
         robot.keyboard { enterText(text) }
-        Thread.sleep(200)
+        Thread.sleep(retryDelayMs / 2)
     }
 
-    /**
-     * Opens a file in the IDE using Cmd+Shift+O.
-     * @param filePath The filename or path to open
-     */
     fun openFile(filePath: String) {
         // Track the current file path for context discovery
         currentFilePath = filePath
@@ -605,7 +866,7 @@ class UiExecutor(
                 Duration.ofSeconds(5),
             )
         ideFrame.click()
-        Thread.sleep(200)
+        Thread.sleep(retryDelayMs / 2)
 
         // Press Cmd+Shift+O to open file dialog
         robot.keyboard {
@@ -615,127 +876,178 @@ class UiExecutor(
                 }
             }
         }
-        Thread.sleep(1000)
+        Thread.sleep(actionDelayMs)
 
         // Type the file path
         robot.keyboard { enterText(filePath) }
         // Wait for results to appear
-        Thread.sleep(1000)
+        Thread.sleep(actionDelayMs)
 
         // Press Enter to open
         robot.keyboard { key(KeyEvent.VK_ENTER) }
-        Thread.sleep(1000)
+        Thread.sleep(actionDelayMs)
     }
-
-    /**
-     * Represents a line of code with its line number.
-     */
-    data class LineWithNumber(val lineNumber: Int, val content: String)
-
-    /**
-     * Reads file contents directly from disk with line numbers.
-     * This is a simpler alternative to using IDE's getDocument() API.
-     *
-     * @param relativePath The path to the file relative to the project root
-     * @return List of LineWithNumber objects containing line number and content
-     */
-    fun readFileWithLineNumbers(relativePath: String): List<LineWithNumber> {
-        val projectPath = getProjectRoot()
-        val resolved = projectPath.resolve(relativePath)
-
-        val file =
-            if (resolved.toFile().exists()) {
-                resolved.toFile()
-            } else {
-                // Bare filename or partial path — walk the src tree to find it
-                val srcRoot = projectPath.resolve("src").toFile()
-                val searchRoot = if (srcRoot.isDirectory) srcRoot else projectPath.toFile()
-                searchRoot.walk()
-                    .filter { it.isFile && (it.name == relativePath || it.path.endsWith(relativePath)) }
-                    .firstOrNull()
-            }
-
-        return try {
-            if (file == null || !file.exists()) {
-                println("File not found in project: $relativePath")
-                return emptyList()
-            }
-            file.readLines()
-                .mapIndexed { index, line -> LineWithNumber(index + 1, line) }
-        } catch (e: Exception) {
-            println("Failed to read file $relativePath: ${e.message}")
-            emptyList()
-        }
-    }
-
-    /**
-     * Reads file contents with line numbers and filters to a specific line range.
-     *
-     * @param relativePath The path to the file relative to the project root
-     * @param startLine Start line number (1-based, inclusive)
-     * @param endLine End line number (1-based, inclusive)
-     * @return List of LineWithNumber objects within the range
-     */
-    fun readFileLines(
-        relativePath: String,
-        startLine: Int,
-        endLine: Int,
-    ): List<LineWithNumber> {
-        return readFileWithLineNumbers(relativePath)
-            .filter { it.lineNumber in startLine..endLine }
-    }
-
-    /**
-     * Finds all occurrences of a symbol in the file and returns their line numbers.
-     *
-     * @param relativePath The path to the file relative to the project root
-     * @param symbol The symbol to search for
-     * @return List of line numbers where the symbol appears
-     */
-    fun findSymbolInFile(
-        relativePath: String,
-        symbol: String,
-    ): List<Int> {
-        return readFileWithLineNumbers(relativePath)
-            .filter { it.content.contains(symbol) }
-            .map { it.lineNumber }
-    }
-
-    /**
-     * Gets the project root path.
-     */
-    private fun getProjectRoot(): java.nio.file.Path {
-        // Get the working directory (project root)
-        return java.nio.file.Paths.get("").toAbsolutePath()
-    }
-
-    /**
-     * Provides simple file context by reading directly from disk.
-     * This is a simpler alternative to analyzeFileStructure() that doesn't require IDE.
-     *
-     * @param relativePath The path to the file relative to the project root
-     * @return SimpleFileContext with methods, variables, and line count
-     */
 
     // ── UI tree fetching ─────────────────────────────────────────────────────
 
     fun fetchUiTree(): List<UiComponent> = treeProvider.fetchTree()
 
     /**
-     * Get the current document text from the focused editor.
-     * Used for detecting source code changes as a completion signal.
-     *
-     * @return The current document text, or null if no editor is focused
+     * Get the text content of the current editor document.
+     * Uses simpler JS approach that doesn't require anonymous classes.
      */
-    fun getDocumentText(): String? {
-        return try {
+    fun getDocumentText(): String? =
+        try {
             val editor = findFocusedEditor()
-            editor.callJs("component.getText()")
+            // Use simpler approach: access document directly, catch any threading errors
+            val text = editor.callJs<String>(
+                """
+                try {
+                    var doc = component.getDocument();
+                    if (doc != null) {
+                        doc.getText(0, doc.getLength());
+                    } else {
+                        null;
+                    }
+                } catch (e) {
+                    null;
+                }
+                """.trimIndent(),
+            )
+            println("  [DEBUG] getDocumentText: returned ${text?.take(100) ?: "null"}...")
+            text
         } catch (e: Exception) {
-            println("  Warning: Could not get document text: ${e.message}")
+            println("  [DEBUG] Could not get document text: ${e.message}")
             null
         }
-    }
+
+    /**
+     * Check if an inline refactoring template is active (rename, extract, inline, etc).
+     *
+     * IntelliJ has two refactoring modes:
+     * 1. Popup dialog - separate window (HeavyWeightWindow)
+     * 2. Inline refactoring - variable highlighted in editor, type directly, press Enter to confirm
+     *
+     * The HTML tree misses inline mode entirely. We check via Remote Robot JS for:
+     * 1. LookupLayeredPane (suggestions popup during inline rename)
+     * 2. Editor template state - the inplace refactoring template is active
+     * 3. HeavyWeightWindow popup (dialog mode)
+     */
+    fun hasInlineRefactoringActive(): Boolean =
+        try {
+            println("  [DEBUG] hasInlineRefactoringActive: Checking for inline refactoring state...")
+
+            // Check 1: LookupLayeredPane - appears during inline rename with suggestions
+            try {
+                val lookupPanes = robot.findAll<ComponentFixture>(
+                    byXpath("//div[contains(@class, 'LookupLayeredPane')]")
+                )
+                if (lookupPanes.isNotEmpty()) {
+                    println("  [DEBUG] hasInlineRefactoringActive: Found LookupLayeredPane (inline suggestions)")
+                    return true
+                }
+            } catch (_: Exception) {}
+
+            // Check 2: Editor template state - check if inplace refactoring is active
+            // This is the key check for inline rename mode (not popup dialog)
+            try {
+                val editor = findFocusedEditor()
+                val templateActive = editor.callJs<String>(
+                    """
+                    try {
+                        // Check for active template in editor (rename/extract inline mode)
+                        var editorEx = component;
+
+                        // Method 1: Check for TemplateState in editor
+                        var templateManager = com.intellij.codeInsight.template.impl.TemplateManagerImpl.getInstance();
+                        if (templateManager != null) {
+                            var templateState = templateManager.getTemplateState(editorEx);
+                            if (templateState != null) {
+                                'template_state';
+                            }
+                        }
+
+                        // Method 2: Check for InplaceRefactoring
+                        var project = com.intellij.openapi.project.ProjectManager.getInstance().getOpenProjects()[0];
+                        if (project != null) {
+                            var fileEditorManager = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project);
+                            var selectedEditor = fileEditorManager.getSelectedTextEditor();
+                            if (selectedEditor != null) {
+                                // Check if there's an inplace refactoring happening
+                                var inplaceRename = selectedEditor.getUserData(com.intellij.refactoring.rename.inplace.InplaceRefactoring.INPLACE_REFACTORING_KEY);
+                                if (inplaceRename != null) {
+                                    'inplace_refactoring';
+                                }
+                            }
+                        }
+
+                        'false';
+                    } catch (e) {
+                        'error:' + e.message;
+                    }
+                    """.trimIndent()
+                )
+                if (templateActive != "false" && templateActive.startsWith("error:") != true) {
+                    println("  [DEBUG] hasInlineRefactoringActive: Editor template detected: $templateActive")
+                    return true
+                }
+            } catch (e: Exception) {
+                println("  [DEBUG] hasInlineRefactoringActive: Template check failed: ${e.message}")
+            }
+
+            // Check 3: HeavyWeightWindow popup (dialog mode rename)
+            try {
+                val popups = robot.findAll<ComponentFixture>(
+                    byXpath("//div[@class='HeavyWeightWindow']")
+                )
+                for (popup in popups) {
+                    try {
+                        val y = popup.callJs<Int>("component.getLocationOnScreen().y")
+                        // Popup at reasonable Y position (above main menu)
+                        if (y > 50) {
+                            println("  [DEBUG] hasInlineRefactoringActive: Found HeavyWeightWindow popup at y=$y")
+                            return true
+                        }
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+
+            println("  [DEBUG] hasInlineRefactoringActive: No refactoring state detected")
+            false
+        } catch (e: Exception) {
+            println("  [DEBUG] hasInlineRefactoringActive check failed: ${e.message}")
+            false
+        }
+
+    /**
+     * Check if the editor has a selection.
+     * Uses UI tree check to avoid threading issues.
+     * An active selection might indicate in-progress operation.
+     */
+    fun hasEditorSelection(): Boolean = hasInlineRefactoringActive()
+
+    // ── XPath / JS escape helpers ─────────────────────────────────────────────
+
+    /**
+     * Wraps [s] in an XPath string literal.
+     * Uses double-quotes when [s] contains a single quote, and concat() when it contains both.
+     */
+    private fun xpathLiteral(s: String): String =
+        when {
+            '\'' !in s -> "'$s'"
+            '"' !in s -> "\"$s\""
+            else -> "concat(${s.split("'").joinToString(", \"'\", ") { "'$it'" }})"
+        }
+
+    /**
+     * Escapes [s] for embedding in a single-quoted JavaScript string literal.
+     */
+    private fun jsEscape(s: String): String =
+        s
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
 
     // ── Utility ──────────────────────────────────────────────────────────────
 
@@ -743,9 +1055,71 @@ class UiExecutor(
         repeat(3) {
             try {
                 robot.keyboard { key(KeyEvent.VK_ESCAPE) }
-                Thread.sleep(200)
+                Thread.sleep(retryDelayMs)
             } catch (_: Exception) {
             }
+        }
+    }
+
+    /**
+     * Detect if a context menu popup is currently open and get its items.
+     * Uses Remote Robot's fixture API directly (not HTML tree).
+     * Returns list of menu item labels visible in the popup.
+     */
+    fun getContextMenuItems(): List<String> {
+        val items = mutableListOf<String>()
+        try {
+            // Scope to HeavyWeightWindow so main-menu-bar ActionMenuItems are never included.
+            val menuItems =
+                robot.findAll<ComponentFixture>(
+                    byXpath("//div[@class='HeavyWeightWindow']//div[@class='ActionMenuItem']"),
+                )
+            for (item in menuItems.toList()) {
+                try {
+                    val y = item.callJs<Int>("component.getLocationOnScreen().y")
+                    if (y > 35) { // Skip any hidden items above the visible screen area
+                        val text = item.callJs<String>("component.getText()") ?: ""
+                        val accName = item.callJs<String>("var ctx = component.getAccessibleContext(); ctx != null ? ctx.getAccessibleName() : ''") ?: ""
+                        items.add(text.ifBlank { accName })
+                    }
+                } catch (_: Exception) {
+                }
+            }
+
+            // Also check for ActionMenu (submenus) — scoped to popup windows
+            val submenus =
+                robot.findAll<ComponentFixture>(
+                    byXpath("//div[@class='HeavyWeightWindow']//div[@class='ActionMenu']"),
+                )
+            for (submenu in submenus.toList()) {
+                try {
+                    val y = submenu.callJs<Int>("component.getLocationOnScreen().y")
+                    if (y > 35) {
+                        val text = submenu.callJs<String>("component.getText()") ?: ""
+                        val accName = submenu.callJs<String>("var ctx = component.getAccessibleContext(); ctx != null ? ctx.getAccessibleName() : ''") ?: ""
+                        items.add(text.ifBlank { accName } + " [submenu]")
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        } catch (e: Exception) {
+            log.warn("  Warning: Could not get context menu items: ${e.message}")
+        }
+        return items.filter { it.isNotBlank() }
+    }
+
+    fun hasContextMenuOpen(): Boolean {
+        return try {
+            val popups =
+                robot.findAll<ComponentFixture>(
+                    byXpath("//div[@class='HeavyWeightWindow']"),
+                )
+            popups.any { popup ->
+                val y = popup.callJs<Int>("component.getLocationOnScreen().y")
+                y > 50 // Exclude main menu bar (y≈39)
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -851,81 +1225,64 @@ class UiExecutor(
         )
     }
 
-    private fun rightClickAt(
-        x: Int,
-        y: Int,
-    ) {
-        val awtRobot = java.awt.Robot()
-        awtRobot.mouseMove(x, y)
-        Thread.sleep(100)
-        awtRobot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
-        Thread.sleep(100)
-        awtRobot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK)
-    }
+    // ── Vision-based coordinate clicking ──────────────────────────────────────
 
-    private fun clickAt(
-        x: Int,
-        y: Int,
-    ) {
-        val awtRobot = java.awt.Robot()
-        awtRobot.mouseMove(x, y)
+    /**
+     * Click on element by numeric ID from vision overlay.
+     * Uses AWT Robot for coordinate-based clicking.
+     */
+    fun clickElementByCoordinate(elementId: Int) {
+        val elementMap = this.elementMap ?: throw IllegalStateException("elementMap not provided for coordinate clicking")
+        val element = elementMap[elementId] ?: throw IllegalArgumentException("Element $elementId not found")
+
+        val centerX = element.x + element.width / 2
+        val centerY = element.y + element.height / 2
+
+        awtRobot.mouseMove(centerX, centerY)
         Thread.sleep(100)
         awtRobot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
-        Thread.sleep(100)
+        Thread.sleep(50)
         awtRobot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(300)
     }
 
-    private fun parseShortcutKeys(shortcut: String): List<Int> {
-        return shortcut.split("+").map { part ->
-            when (part.trim().lowercase()) {
-                "cmd", "meta", "command" -> KeyEvent.VK_META
-                "ctrl", "control" -> KeyEvent.VK_CONTROL
-                "alt", "option" -> KeyEvent.VK_ALT
-                "shift" -> KeyEvent.VK_SHIFT
-                "enter", "return" -> KeyEvent.VK_ENTER
-                "escape", "esc" -> KeyEvent.VK_ESCAPE
-                "tab" -> KeyEvent.VK_TAB
-                "delete", "backspace" -> KeyEvent.VK_BACK_SPACE
-                "f1" -> KeyEvent.VK_F1
-                "f2" -> KeyEvent.VK_F2
-                "f3" -> KeyEvent.VK_F3
-                "f4" -> KeyEvent.VK_F4
-                "f5" -> KeyEvent.VK_F5
-                "f6" -> KeyEvent.VK_F6
-                "f7" -> KeyEvent.VK_F7
-                "f8" -> KeyEvent.VK_F8
-                "f9" -> KeyEvent.VK_F9
-                "f10" -> KeyEvent.VK_F10
-                "f11" -> KeyEvent.VK_F11
-                "f12" -> KeyEvent.VK_F12
-                "a" -> KeyEvent.VK_A
-                "b" -> KeyEvent.VK_B
-                "c" -> KeyEvent.VK_C
-                "d" -> KeyEvent.VK_D
-                "e" -> KeyEvent.VK_E
-                "f" -> KeyEvent.VK_F
-                "g" -> KeyEvent.VK_G
-                "h" -> KeyEvent.VK_H
-                "i" -> KeyEvent.VK_I
-                "j" -> KeyEvent.VK_J
-                "k" -> KeyEvent.VK_K
-                "l" -> KeyEvent.VK_L
-                "m" -> KeyEvent.VK_M
-                "n" -> KeyEvent.VK_N
-                "o" -> KeyEvent.VK_O
-                "p" -> KeyEvent.VK_P
-                "q" -> KeyEvent.VK_Q
-                "r" -> KeyEvent.VK_R
-                "s" -> KeyEvent.VK_S
-                "t" -> KeyEvent.VK_T
-                "u" -> KeyEvent.VK_U
-                "v" -> KeyEvent.VK_V
-                "w" -> KeyEvent.VK_W
-                "x" -> KeyEvent.VK_X
-                "y" -> KeyEvent.VK_Y
-                "z" -> KeyEvent.VK_Z
-                else -> KeyEvent.getExtendedKeyCodeForChar(part.trim().first().code)
-            }
-        }
+    /**
+     * Double-click on element by numeric ID.
+     */
+    fun doubleClickElementByCoordinate(elementId: Int) {
+        val elementMap = this.elementMap ?: throw IllegalStateException("elementMap not provided for coordinate clicking")
+        val element = elementMap[elementId] ?: throw IllegalArgumentException("Element $elementId not found")
+
+        val centerX = element.x + element.width / 2
+        val centerY = element.y + element.height / 2
+
+        awtRobot.mouseMove(centerX, centerY)
+        Thread.sleep(100)
+        awtRobot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(50)
+        awtRobot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(100)
+        awtRobot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(50)
+        awtRobot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(300)
+    }
+
+    /**
+     * Right-click on element by numeric ID.
+     */
+    fun rightClickElementByCoordinate(elementId: Int) {
+        val elementMap = this.elementMap ?: throw IllegalStateException("elementMap not provided for coordinate clicking")
+        val element = elementMap[elementId] ?: throw IllegalArgumentException("Element $elementId not found")
+
+        val centerX = element.x + element.width / 2
+        val centerY = element.y + element.height / 2
+
+        awtRobot.mouseMove(centerX, centerY)
+        Thread.sleep(100)
+        awtRobot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
+        Thread.sleep(50)
+        awtRobot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK)
+        Thread.sleep(300)
     }
 }

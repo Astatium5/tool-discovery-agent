@@ -1,16 +1,15 @@
 package execution
 
+import agent.AgentConfig.robotPort
+import agent.UiAgent
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.ui.Messages
 import com.intellij.remoterobot.RemoteRobot
-import agent.UiAgent
-import llm.LlmModel
-import perception.UiTreeFormatter
-import perception.parser.HtmlUiTreeProvider
+import llm.LlmConfig
+import perception.tree.HtmlUiTreeProvider
 import profile.ApplicationProfile
-import java.io.File
 
 class LaunchAgentAction : AnAction() {
     private val log = logger<LaunchAgentAction>()
@@ -18,33 +17,14 @@ class LaunchAgentAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         log.info("Tool Discovery Agent action triggered")
 
-        val project = e.project ?: run {
-            Messages.showErrorDialog("No project open.", "Tool Discovery Agent")
-            return
-        }
-
-        // Read .env config — try project dir, then working dir, then walk up
-        val searchDirs = buildList {
-            project.basePath?.let { add(it) }
-            add(System.getProperty("user.dir"))
-            // Walk up from working dir looking for .env
-            var dir = File(System.getProperty("user.dir"))
-            while (dir.parentFile != null) {
-                dir = dir.parentFile
-                add(dir.absolutePath)
+        val project =
+            e.project ?: run {
+                Messages.showErrorDialog("No project open.", "Tool Discovery Agent")
+                return
             }
-        }
-        val envConfig = searchDirs.firstNotNullOfOrNull { loadEnvConfig(it) } ?: emptyMap()
-        val apiKey = envConfig["LLM_API_KEY"]
-            ?: System.getenv("LLM_API_KEY")
-        val baseUrl = envConfig["LLM_BASE_URL"]
-            ?: System.getenv("LLM_BASE_URL")
-            ?: "https://coding-intl.dashscope.aliyuncs.com/v1"
-        val model = envConfig["LLM_MODEL"]
-            ?: System.getenv("LLM_MODEL")
-            ?: "MiniMax-M2.5"
 
-        if (apiKey.isNullOrBlank()) {
+        val config = LlmConfig.load(project.basePath)
+        if (!config.hasApiKey()) {
             Messages.showErrorDialog(
                 "LLM_API_KEY not set. Copy .env.example to .env and configure it.",
                 "Tool Discovery Agent",
@@ -64,7 +44,6 @@ class LaunchAgentAction : AnAction() {
         if (intent.isBlank()) return
 
         // Connect to RemoteRobot
-        val robotPort = 8082
         val robot =
             try {
                 RemoteRobot("http://127.0.0.1:$robotPort")
@@ -78,11 +57,15 @@ class LaunchAgentAction : AnAction() {
             }
 
         // Build components
-        val llm = LlmModel.create(apiKey = apiKey, baseUrl = baseUrl, model = model)
+        val llm = config.createChatModel()
         val treeProvider = HtmlUiTreeProvider("http://127.0.0.1:$robotPort")
-        val basePath = searchDirs.first()
-        val profile = ApplicationProfile.loadFromFile("$basePath/build/reports/app-profile.json")
-            ?: ApplicationProfile(appName = "IntelliJ IDEA")
+        val basePath = project.basePath ?: System.getProperty("user.dir")
+        val profile =
+            ApplicationProfile.loadFromFile("$basePath/build/reports/app-profile.json")
+                ?: run {
+                    log.warn("Application profile not found, using default. Run UI profiling first for better results.")
+                    ApplicationProfile(appName = "IntelliJ IDEA")
+                }
         val executor = UiExecutor(robot, treeProvider)
 
         val agent = UiAgent(llm, profile, executor) { treeProvider.fetchTree() }
@@ -114,21 +97,5 @@ class LaunchAgentAction : AnAction() {
                 }
             }
         }.start()
-    }
-
-    private fun loadEnvConfig(basePath: String): Map<String, String> {
-        val envFile = File(basePath, ".env")
-        if (!envFile.exists()) return emptyMap()
-        return envFile.readLines()
-            .filter { it.isNotBlank() && !it.startsWith("#") }
-            .mapNotNull { line ->
-                val idx = line.indexOf('=')
-                if (idx > 0) {
-                    line.substring(0, idx).trim() to line.substring(idx + 1).trim()
-                } else {
-                    null
-                }
-            }
-            .toMap()
     }
 }

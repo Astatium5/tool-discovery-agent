@@ -24,9 +24,31 @@
 
             <action id="ToolDiscovery.LaunchAgent"
                     class="execution.LaunchAgentAction"
-                    text="Launch Agent"
-                    description="Start the Tool Discovery Agent"
+                    text="Launch UI Tree Agent"
+                    description="Start the UI Tree-based Agent"
                     icon="AllIcons.Actions.Find"/>
+
+            <action id="ToolDiscovery.LaunchVisionAgent"
+                    class="execution.LaunchVisionAgentAction"
+                    text="Launch Vision Agent"
+                    description="Start the Vision-based Agent (AppAgent approach)"
+                    icon="AllIcons.Actions.Preview"/>
+
+            <separator/>
+
+            <action id="ToolDiscovery.ClearRecipes"
+                    class="execution.ClearRecipesAction"
+                    text="Clear Saved Recipes"
+                    description="Clear all learned recipe patterns"
+                    icon="AllIcons.Actions.GC"/>
+
+            <separator/>
+
+            <action id="ToolDiscovery.RunEvaluation"
+                    class="execution.RunEvaluationAction"
+                    text="Run Evaluation"
+                    description="Compare UI Tree vs Vision approaches"
+                    icon="AllIcons.Actions.Preview"/>
         </group>
     </actions>
 </idea-plugin>

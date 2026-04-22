@@ -1,10 +1,13 @@
 package profile
 
+import com.intellij.openapi.diagnostic.logger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+
+private val log = logger<ApplicationProfile>()
 
 /**
  * Persistent mapping from application-specific UI class names to semantic roles.
@@ -13,16 +16,14 @@ import java.io.File
  * Every layer that needs to interpret the UI tree (parser, snapshot builder,
  * discovery agent) queries this profile instead of checking hardcoded class names.
  *
- * The profile is mutable at runtime to support progressive enrichment:
- * when the agent encounters a class it has never seen, [UIProfiler] classifies
- * it on the fly and merges the result back into the profile.
+ * Now immutable: merge() returns a new instance instead of mutating.
  */
 @Serializable
 data class ApplicationProfile(
     val appName: String,
     val profileVersion: String = "1.0",
     val createdAt: Long = System.currentTimeMillis(),
-    val classRoles: MutableMap<String, ComponentRole> = mutableMapOf(),
+    val classRoles: Map<String, ComponentRole> = emptyMap(),
 ) {
     // ── Role queries ────────────────────────────────────────────────────────
 
@@ -91,21 +92,32 @@ data class ApplicationProfile(
     /** True for classes that indicate a submenu (children are menu items). */
     fun hasSubmenuIndicator(cls: String) = roleOf(cls) == ComponentRole.MENU_CONTAINER
 
-    // ── Mutation (progressive enrichment) ───────────────────────────────────
+    // ── Immutable updates ───────────────────────────────────────────────────
 
-    fun merge(newMappings: Map<String, ComponentRole>) {
-        classRoles.putAll(newMappings)
-    }
+    /**
+     * Return a new profile with merged mappings (immutable update).
+     */
+    fun merge(newMappings: Map<String, ComponentRole>): ApplicationProfile =
+        copy(classRoles = classRoles + newMappings)
+
+    /**
+     * Return a new profile with additional mappings (immutable update).
+     */
+    fun withMappings(mappings: Map<String, ComponentRole>): ApplicationProfile =
+        copy(classRoles = classRoles + mappings)
 
     fun unknownClasses(observed: Set<String>): Set<String> = observed.filter { roleOf(it) == ComponentRole.UNKNOWN }.toSet()
 
     // ── Persistence ─────────────────────────────────────────────────────────
 
     fun saveToFile(path: String) {
-        val dir = File(path).parentFile
-        if (dir != null && !dir.exists()) dir.mkdirs()
-        File(path).writeText(json.encodeToString(this))
-        println("ApplicationProfile: saved ${classRoles.size} class mappings to $path")
+        val file = File(path)
+        val dir = file.parentFile
+        if (dir != null && !dir.exists()) {
+            check(dir.mkdirs()) { "Failed to create profile directory: ${dir.absolutePath}" }
+        }
+        file.writeText(json.encodeToString(this))
+        log.info("Saved ${classRoles.size} class mappings to $path")
     }
 
     companion object {
@@ -121,10 +133,10 @@ data class ApplicationProfile(
             if (!file.exists()) return null
             return try {
                 val profile = json.decodeFromString<ApplicationProfile>(file.readText())
-                println("ApplicationProfile: loaded ${profile.classRoles.size} class mappings from $path")
+                log.info("Loaded ${profile.classRoles.size} class mappings from $path")
                 profile
             } catch (e: Exception) {
-                println("ApplicationProfile: failed to load from $path: ${e.message}")
+                log.warn("Failed to load from $path: ${e.message}")
                 null
             }
         }

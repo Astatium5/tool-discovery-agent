@@ -1,13 +1,16 @@
 package recipe
 
+import com.intellij.openapi.diagnostic.logger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import model.AgentAction
-import llm.LLMReasoner.HistoryEntry
-import llm.LLMReasoner.RecipeSummary
+import reasoner.TreeReasoner.HistoryEntry
+import reasoner.TreeReasoner.RecipeSummary
 import java.io.File
 import java.time.Instant
+
+private val log = logger<VerifiedRecipe>()
 
 /**
  * Verified Recipe - A saved execution pattern that was successfully completed.
@@ -133,7 +136,6 @@ data class VerifiedRecipe(
                                 "timeoutMs" to action.timeoutMs.toString(),
                             ),
                         )
-                    is AgentAction.UseRecipe -> ActionJson("use_recipe", mapOf("recipeId" to action.recipeId))
                     is AgentAction.Observe -> ActionJson("observe")
                     is AgentAction.Complete -> ActionJson("complete")
                     is AgentAction.Fail -> ActionJson("fail")
@@ -173,7 +175,7 @@ data class VerifiedRecipe(
                 val content = file.readText()
                 json.decodeFromString<List<VerifiedRecipe>>(content)
             } catch (e: Exception) {
-                println("  Warning: Failed to load recipes from $path: ${e.message}")
+                log.warn("Failed to load recipes from $path: ${e.message}")
                 emptyList()
             }
         }
@@ -192,7 +194,7 @@ data class VerifiedRecipe(
                 val content = json.encodeToString(recipes)
                 file.writeText(content)
             } catch (e: Exception) {
-                println("  Warning: Failed to save recipes to $path: ${e.message}")
+                log.warn("Failed to save recipes to $path: ${e.message}")
             }
         }
     }
@@ -207,6 +209,7 @@ data class VerifiedRecipe(
  * 3. Never executed blindly
  */
 class RecipeRegistry(private val storagePath: String = "build/reports/verified-recipes.json") {
+    private val log = logger<RecipeRegistry>()
     private val recipes: MutableList<VerifiedRecipe> = mutableListOf()
 
     init {
@@ -219,7 +222,7 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
     fun load() {
         recipes.clear()
         recipes.addAll(VerifiedRecipe.loadFromFile(storagePath))
-        println("  RecipeRegistry: Loaded ${recipes.size} recipes")
+        log.info("Loaded ${recipes.size} recipes")
     }
 
     /**
@@ -227,7 +230,7 @@ class RecipeRegistry(private val storagePath: String = "build/reports/verified-r
      */
     fun save() {
         VerifiedRecipe.saveToFile(recipes, storagePath)
-        println("  RecipeRegistry: Saved ${recipes.size} recipes")
+        log.info("Saved ${recipes.size} recipes")
     }
 
     /**

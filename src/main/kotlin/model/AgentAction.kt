@@ -29,9 +29,6 @@ sealed class AgentAction {
     data class Wait(val elementType: String, val timeoutMs: Long = 5000) : AgentAction()
 
     @Serializable
-    data class UseRecipe(val recipeId: String, val params: Map<String, String> = emptyMap()) : AgentAction()
-
-    @Serializable
     data object Observe : AgentAction()
 
     @Serializable
@@ -51,7 +48,6 @@ sealed class AgentAction {
                 is PressKey -> "PressKey('${action.key}')"
                 is SelectDropdown -> "SelectDropdown('${action.target}', '${action.value}')"
                 is Wait -> "Wait('${action.elementType}')"
-                is UseRecipe -> "UseRecipe('${action.recipeId}')"
                 is Observe -> "Observe"
                 is Complete -> "Complete"
                 is Fail -> "Fail"

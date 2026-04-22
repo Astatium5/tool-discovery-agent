@@ -130,7 +130,6 @@ intellijPlatformTesting {
             plugins {
                 // Robot server plugin for UI testing
                 robotServerPlugin(remoteRobotVersion)
-                id("co.uzzu.dotenv.gradle") version "2.1.0"
             }
         }
     }

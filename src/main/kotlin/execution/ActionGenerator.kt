@@ -1,13 +1,21 @@
 package execution
 
+import agent.AgentConfig.contextMenuDelayMs
+import agent.AgentConfig.elementWaitTimeoutMs
+import agent.AgentConfig.maxMenuItemsPreview
+import agent.AgentConfig.maxSnapshotComponents
+import agent.AgentConfig.menuClickDelayMs
+import agent.AgentConfig.retryDelayMs
+import agent.AgentConfig.typingCharDelayMs
+import agent.AgentConfig.uiAnalysisTimeoutMs
+import com.intellij.openapi.diagnostic.logger
 import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.model.chat.ChatModel
-import execution.UiExecutor
 import model.AgentAction
-import perception.parser.ScopedSnapshotBuilder
-import perception.parser.UiComponent
-import perception.parser.UiTreeParser
+import perception.tree.ScopedSnapshotBuilder
+import perception.tree.UiComponent
+import perception.tree.UiTreeParser
 import profile.ApplicationProfile
 
 /**
@@ -28,6 +36,8 @@ class ActionGenerator(
     private val uiTreeProvider: () -> List<UiComponent>,
     private val llm: ChatModel? = null,
 ) {
+    private val log = logger<ActionGenerator>()
+
     companion object {
         /**
          * Prompt for LLM to analyze UI state after clicking a menu item.
@@ -104,7 +114,7 @@ Return JSON:
     /**
      * Result of executing an action.
      */
-    data class ActionResult(
+    data class ExecutionResult(
         val success: Boolean,
         val message: String,
         val data: Map<String, Any> = emptyMap(),
@@ -120,8 +130,8 @@ Return JSON:
     fun execute(
         action: AgentAction,
         currentUiTree: List<UiComponent>,
-    ): ActionResult {
-        println("  ActionGenerator: Executing ${action::class.simpleName}")
+    ): ExecutionResult {
+        log.debug("  ActionGenerator: Executing ${action::class.simpleName}")
 
         return when (action) {
             // Navigation actions
@@ -134,10 +144,9 @@ Return JSON:
             is AgentAction.PressKey -> executePressKey(action)
             is AgentAction.SelectDropdown -> executeSelectDropdown(action, currentUiTree)
             is AgentAction.Wait -> executeWait(action, currentUiTree)
-            is AgentAction.UseRecipe -> executeRecipe(action, currentUiTree)
-            is AgentAction.Observe -> ActionResult(true, "Observed UI state")
-            is AgentAction.Complete -> ActionResult(true, "Task completed")
-            is AgentAction.Fail -> ActionResult(false, "Task failed")
+            is AgentAction.Observe -> ExecutionResult(true, "Observed UI state")
+            is AgentAction.Complete -> ExecutionResult(true, "Task completed")
+            is AgentAction.Fail -> ExecutionResult(false, "Task failed")
         }
     }
 
@@ -146,39 +155,39 @@ Return JSON:
     /**
      * Execute an OpenFile action.
      */
-    private fun executeOpenFile(action: AgentAction.OpenFile): ActionResult {
+    private fun executeOpenFile(action: AgentAction.OpenFile): ExecutionResult {
         return try {
             executor.openFile(action.path)
-            Thread.sleep(1000) // Wait for file to open
-            ActionResult(true, "Opened file '${action.path}'")
+            Thread.sleep(contextMenuDelayMs)
+            ExecutionResult(true, "Opened file '${action.path}'")
         } catch (e: Exception) {
-            ActionResult(false, "Failed to open file: ${e.message}")
+            ExecutionResult(false, "Failed to open file: ${e.message}")
         }
     }
 
     /**
      * Execute a MoveCaret action.
      */
-    private fun executeMoveCaret(action: AgentAction.MoveCaret): ActionResult {
+    private fun executeMoveCaret(action: AgentAction.MoveCaret): ExecutionResult {
         return try {
             executor.moveCaret(action.symbol)
-            Thread.sleep(300)
-            ActionResult(true, "Moved caret to '${action.symbol}'")
+            Thread.sleep(retryDelayMs)
+            ExecutionResult(true, "Moved caret to '${action.symbol}'")
         } catch (e: Exception) {
-            ActionResult(false, "Failed to move caret: ${e.message}")
+            ExecutionResult(false, "Failed to move caret: ${e.message}")
         }
     }
 
     /**
      * Execute a SelectLines action.
      */
-    private fun executeSelectLines(action: AgentAction.SelectLines): ActionResult {
+    private fun executeSelectLines(action: AgentAction.SelectLines): ExecutionResult {
         return try {
             executor.selectLines(action.start, action.end)
-            Thread.sleep(300)
-            ActionResult(true, "Selected lines ${action.start}-${action.end}")
+            Thread.sleep(retryDelayMs)
+            ExecutionResult(true, "Selected lines ${action.start}-${action.end}")
         } catch (e: Exception) {
-            ActionResult(false, "Failed to select lines: ${e.message}")
+            ExecutionResult(false, "Failed to select lines: ${e.message}")
         }
     }
 
@@ -196,7 +205,7 @@ Return JSON:
     private fun executeClick(
         action: AgentAction.Click,
         uiTree: List<UiComponent>,
-    ): ActionResult {
+    ): ExecutionResult {
         val target = action.target
 
         return try {
@@ -208,10 +217,10 @@ Return JSON:
 
                 executor.clickMenuItem(target)
                 // Wait for menu action to take effect
-                Thread.sleep(800)
+                Thread.sleep(menuClickDelayMs)
 
                 // ALWAYS wait for UI changes and classify - no keyword-based shortcuts
-                val waitResult = waitForUIElement(timeoutMs = 2000)
+                val waitResult = waitForUIElement(timeoutMs = uiAnalysisTimeoutMs)
 
                 // Get fresh UI tree for LLM analysis
                 val postClickUiTree = uiTreeProvider()
@@ -225,10 +234,10 @@ Return JSON:
                         preClickPopupCount = preClickPopupCount,
                     )
 
-                println("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
+                log.info("    LLM State Analysis: ${analysis.stateType} - ${analysis.reasoning.take(80)}")
 
                 // Return result with analysis data
-                ActionResult(
+                ExecutionResult(
                     success = true,
                     message = "Clicked menu item '$target' - ${analysis.description}",
                     data =
@@ -246,14 +255,14 @@ Return JSON:
                 // Try as dialog button
                 try {
                     executor.clickDialogButton(target)
-                    Thread.sleep(500)
-                    ActionResult(true, "Clicked button '$target'")
+                    Thread.sleep(contextMenuDelayMs / 2)
+                    ExecutionResult(true, "Clicked button '$target'")
                 } catch (e2: Exception) {
-                    ActionResult(false, "Could not click '$target': ${e2.message}")
+                    ExecutionResult(false, "Could not click '$target': ${e2.message}")
                 }
             }
         } catch (e: Exception) {
-            ActionResult(false, "Failed to click '$target': ${e.message}")
+            ExecutionResult(false, "Failed to click '$target': ${e.message}")
         }
     }
 
@@ -262,10 +271,10 @@ Return JSON:
      * Uses flattened component search and retry polling for reliability.
      * @return true if an element was detected, false otherwise
      */
-    private fun waitForUIElement(timeoutMs: Long = 3000): Boolean {
+    private fun waitForUIElement(timeoutMs: Long = elementWaitTimeoutMs): Boolean {
         val startTime = System.currentTimeMillis()
 
-        println("    Auto-waiting for UI element...")
+        log.debug("    Auto-waiting for UI element...")
 
         var attempt = 0
         while (System.currentTimeMillis() - startTime < timeoutMs) {
@@ -287,65 +296,81 @@ Return JSON:
                         component.children.any { profile.isTextInput(it.cls) }
                 }
 
-            if (hasDialog || hasPopup || hasTextInput || hasInlineWidget) {
+            // LookupLayeredPane = IntelliJ's inline-refactoring completion popup
+            val hasLookupPane = allComponents.any { "LookupLayeredPane" in it.cls }
+
+            if (hasDialog || hasPopup || hasTextInput || hasInlineWidget || hasLookupPane) {
                 val detectedType =
                     when {
                         hasDialog -> "dialog"
                         hasInlineWidget -> "inline widget"
                         hasPopup -> "popup"
+                        hasLookupPane -> "inline refactoring lookup"
                         else -> "text input"
                     }
-                println("    ✓ UI element detected: $detectedType (attempt $attempt)")
+                log.debug("    ✓ UI element detected: $detectedType (attempt $attempt)")
                 return true
             }
 
-            Thread.sleep(300)
+            Thread.sleep(retryDelayMs)
         }
 
-        println("    No dialog/widget detected after ${timeoutMs}ms ($attempt attempts)")
+        log.debug("    No dialog/widget detected after ${timeoutMs}ms ($attempt attempts)")
         return false
     }
 
     /**
      * Execute a type action.
      * If target is specified, uses focusField to focus the field before typing.
+     * Validates that an input field or inline rename widget exists before typing.
      */
     private fun executeType(
         action: AgentAction.Type,
         uiTree: List<UiComponent>,
-    ): ActionResult {
+    ): ExecutionResult {
+        // Check if there's an input field, an inline rename template, or a popup widget
+        val allComponents = UiTreeParser.flatten(uiTreeProvider())
+        val hasInputField = allComponents.any { profile.isTextInput(it.cls) }
+        val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
+        val hasInlineRefactoring = hasPopup && hasInputField
+        // Shift+F6/Cmd+F6 opens an in-editor live template — not a separate popup — so the
+        // accessibility tree shows no new input field.  Ask IntelliJ directly.
+        val hasInlineTemplate = executor.hasInlineRefactoringActive()
+        // LookupLayeredPane appears when IntelliJ's inline refactoring is active with suggestions
+        val hasLookupPane = allComponents.any { "LookupLayeredPane" in it.cls }
+
+        if (!hasInlineRefactoring && !hasInputField && !hasInlineTemplate && !hasLookupPane && action.target == null) {
+            log.warn("    WARNING: No input field detected - cannot type safely")
+            return ExecutionResult(false, "No input field available for typing - refactoring dialog may not be open")
+        }
+
         return try {
             // If target is specified, focus the field first
             if (action.target != null) {
-                println("    Focusing field '${action.target}' before typing")
+                log.debug("    Focusing field '${action.target}' before typing")
                 try {
                     executor.focusField(action.target)
-                    Thread.sleep(200)
+                    Thread.sleep(retryDelayMs / 3)
                 } catch (e: Exception) {
-                    println("    Could not focus field '${action.target}': ${e.message}")
-                    // Continue anyway - the field might already be focused
+                    log.debug("    Could not focus field '${action.target}': ${e.message}")
                 }
             }
 
-            if (action.clearFirst) {
-                // Select all first (Ctrl+A)
-                executor.pressShortcut("ctrl A")
-                Thread.sleep(100)
+            // Skip clearFirst when the inline refactoring template is active.
+            val isInlineRefactoringActive = hasInlineTemplate || hasLookupPane
+            if (action.clearFirst && !isInlineRefactoringActive) {
+                executor.pressShortcut("Ctrl+A")
+                Thread.sleep(retryDelayMs / 3)
             }
             executor.typeInDialog(action.text)
-            Thread.sleep(action.text.length * 20L)
-            ActionResult(true, "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})")
+            Thread.sleep(action.text.length * typingCharDelayMs)
+            ExecutionResult(true, "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})")
         } catch (e: Exception) {
-            ActionResult(false, "Failed to type: ${e.message}")
+            ExecutionResult(false, "Failed to type: ${e.message}")
         }
     }
 
-    /**
-     * Execute a press key action.
-     * Supports both single keys (Enter, Escape) and shortcuts (Shift+F6).
-     * Special key "context_menu" opens the right-click context menu.
-     */
-    private fun executePressKey(action: AgentAction.PressKey): ActionResult {
+    private fun executePressKey(action: AgentAction.PressKey): ExecutionResult {
         return try {
             val key = action.key.lowercase()
 
@@ -353,24 +378,36 @@ Return JSON:
                 // Special case: open context menu
                 key == "context_menu" -> {
                     executor.openContextMenu()
-                    Thread.sleep(500) // Wait for menu to appear
-                    ActionResult(true, "Opened context menu")
+                    Thread.sleep(contextMenuDelayMs)
+                    ExecutionResult(true, "Opened context menu")
                 }
                 // Shortcut (contains +)
                 key.contains("+") -> {
-                    executor.pressShortcut(action.key) // Preserve original case
-                    Thread.sleep(300)
-                    ActionResult(true, "Pressed shortcut '${action.key}'")
+                    executor.pressShortcut(action.key)
+                    if (key == "shift+f6") {
+                        Thread.sleep(contextMenuDelayMs)
+                        val templateActive = executor.hasInlineRefactoringActive()
+                        val msg =
+                            if (templateActive) {
+                                "Pressed 'Shift+F6' - inline refactoring template is active, type the new name now"
+                            } else {
+                                "Pressed 'Shift+F6' - refactoring template not detected, consider context-menu approach"
+                            }
+                        ExecutionResult(true, msg)
+                    } else {
+                        Thread.sleep(retryDelayMs)
+                        ExecutionResult(true, "Pressed shortcut '${action.key}'")
+                    }
                 }
                 // Single key
                 else -> {
                     executor.pressKey(action.key)
-                    Thread.sleep(300)
-                    ActionResult(true, "Pressed key '${action.key}'")
+                    Thread.sleep(retryDelayMs)
+                    ExecutionResult(true, "Pressed key '${action.key}'")
                 }
             }
         } catch (e: Exception) {
-            ActionResult(false, "Failed to press key: ${e.message}")
+            ExecutionResult(false, "Failed to press key: ${e.message}")
         }
     }
 
@@ -380,28 +417,27 @@ Return JSON:
     private fun executeSelectDropdown(
         action: AgentAction.SelectDropdown,
         uiTree: List<UiComponent>,
-    ): ActionResult {
+    ): ExecutionResult {
         return try {
             executor.selectDropdownField(action.target, action.value)
-            Thread.sleep(300)
-            ActionResult(true, "Selected '${action.value}' from '${action.target}'")
+            Thread.sleep(retryDelayMs)
+            ExecutionResult(true, "Selected '${action.value}' from '${action.target}'")
         } catch (e: Exception) {
-            ActionResult(false, "Failed to select dropdown value: ${e.message}")
+            ExecutionResult(false, "Failed to select dropdown value: ${e.message}")
         }
     }
 
     /**
      * Execute a wait action.
-     * Re-observes the UI to check if the element appeared.
      */
     private fun executeWait(
         action: AgentAction.Wait,
         uiTree: List<UiComponent>,
-    ): ActionResult {
+    ): ExecutionResult {
         val startTime = System.currentTimeMillis()
         val elementType = action.elementType.lowercase()
 
-        println("    Waiting for element '$elementType' (timeout: ${action.timeoutMs}ms)")
+        log.debug("    Waiting for element '$elementType' (timeout: ${action.timeoutMs}ms)")
 
         // Poll for the element to appear
         while (System.currentTimeMillis() - startTime < action.timeoutMs) {
@@ -446,32 +482,15 @@ Return JSON:
                         foundTextField -> "text field"
                         else -> elementType
                     }
-                println("    ✓ Found element '$foundType'")
-                return ActionResult(true, "Element '$elementType' appeared")
+                log.debug("    ✓ Found element '$foundType'")
+                return ExecutionResult(true, "Element '$elementType' appeared")
             }
 
-            Thread.sleep(300)
+            Thread.sleep(retryDelayMs)
         }
 
-        println("    ✗ Element '$elementType' not found after ${action.timeoutMs}ms")
-        return ActionResult(false, "Element '$elementType' did not appear within ${action.timeoutMs}ms")
-    }
-
-    /**
-     * Execute a recipe (as reference, not blind execution).
-     * This is a placeholder - the actual implementation would use the recipe
-     * as context for the LLM to make decisions.
-     */
-    private fun executeRecipe(
-        action: AgentAction.UseRecipe,
-        uiTree: List<UiComponent>,
-    ): ActionResult {
-        // Recipes should not be executed blindly.
-        // Instead, they should be used as context for the LLM.
-        return ActionResult(
-            success = false,
-            message = "Recipe execution should be handled by the Brain Agent, not ActionGenerator",
-        )
+        log.debug("    ✗ Element '$elementType' not found after ${action.timeoutMs}ms")
+        return ExecutionResult(false, "Element '$elementType' did not appear within ${action.timeoutMs}ms")
     }
 
     /**
@@ -530,10 +549,11 @@ Return JSON:
 
         // Programmatic detection first
         val hasDialog = allComponents.any { profile.isDialog(it.cls) }
+        // LookupLayeredPane = IntelliJ's inline-rename popup; treat it as an inline editor
         val hasInline =
             allComponents.any {
                 profile.isEditor(it.cls) && allComponents.any { profile.isPopupWindow(it.cls) }
-            }
+            } || allComponents.any { "LookupLayeredPane" in it.cls }
         val hasPopupList =
             allComponents.any {
                 profile.isList(it.cls) || profile.isTable(it.cls) || profile.isTree(it.cls)
@@ -542,7 +562,7 @@ Return JSON:
 
         // Get menu items for context
         val allMenuItems = ScopedSnapshotBuilder.forAllPopupsStructured(uiTree ?: emptyList())
-        val menuItemLabels = allMenuItems.map { it.label }.take(20)
+        val menuItemLabels = allMenuItems.map { it.label }.take(maxMenuItemsPreview)
 
         // Submenu guard: if new popups appeared AND menu items are visible,
         // an existing inline editor behind the menu should not cause a false tool_triggered.
@@ -550,15 +570,14 @@ Return JSON:
         val hasMenuItems = allMenuItems.isNotEmpty()
         val inlineIsProbablyPreExisting = hasInline && newPopupsAppeared && hasMenuItems
 
-        // Debug logging
-        println(
+        log.debug(
             "    UI State: $popupCount popups (was $preClickPopupCount), hasDialog=$hasDialog, hasInline=$hasInline" +
                 " (pre-existing=$inlineIsProbablyPreExisting), hasPopup=$hasPopupList, menuItems=${allMenuItems.size}",
         )
 
         // If no LLM available, use fallback analysis
         if (llm == null) {
-            println("    No LLM available, using fallback analysis")
+            log.debug("    No LLM available, using fallback analysis")
             return fallbackAnalysis(hasDialog, hasInline, hasPopupList, menuItemLabels)
         }
 
@@ -576,10 +595,11 @@ Return JSON:
                 .replace("{{UI_SNAPSHOT}}", uiSnapshot)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from("You are a UI state analysis agent for IDE automation."),
-                UserMessage.from(prompt),
-            )
+            val response =
+                llm.chat(
+                    SystemMessage.from("You are a UI state analysis agent for IDE automation."),
+                    UserMessage.from(prompt),
+                )
             val responseText = response.aiMessage().text()
 
             // Parse LLM response
@@ -591,11 +611,11 @@ Return JSON:
             val dialogFields = extractJsonArray(responseText, "dialog_fields")
             val description = extractJsonString(responseText, "description") ?: ""
 
-            println("    LLM Analysis: stateType=$stateType, reasoning=${reasoning.take(80)}...")
+            log.debug("    LLM Analysis: stateType=$stateType, reasoning=${reasoning.take(80)}...")
 
             when (stateType) {
                 "submenu" -> {
-                    println("    → LLM classified as SUBMENU with ${availableItems.size} items")
+                    log.info("    → LLM classified as SUBMENU with ${availableItems.size} items")
                     ToolResponseAnalysis(
                         stateType = ToolResponseAnalysis.StateType.SUBMENU,
                         reasoning = reasoning,
@@ -611,7 +631,7 @@ Return JSON:
                     // and the inline editor was already there before the click,
                     // this is actually a submenu, not a tool trigger.
                     if (inlineIsProbablyPreExisting && toolResponseType == "inline") {
-                        println("    → LLM said TOOL_TRIGGERED(inline) but inline editor is pre-existing; reclassifying as SUBMENU")
+                        log.info("    → LLM said TOOL_TRIGGERED(inline) but inline editor is pre-existing; reclassifying as SUBMENU")
                         ToolResponseAnalysis(
                             stateType = ToolResponseAnalysis.StateType.SUBMENU,
                             reasoning = "$reasoning (Note: inline editor was pre-existing)",
@@ -622,7 +642,7 @@ Return JSON:
                             description = description,
                         )
                     } else {
-                        println("    → LLM classified as TOOL_TRIGGERED (type: $toolResponseType)")
+                        log.info("    → LLM classified as TOOL_TRIGGERED (type: $toolResponseType)")
                         ToolResponseAnalysis(
                             stateType = ToolResponseAnalysis.StateType.TOOL_TRIGGERED,
                             reasoning = reasoning,
@@ -635,7 +655,7 @@ Return JSON:
                     }
                 }
                 "dismissed" -> {
-                    println("    → LLM classified as DISMISSED (menu closed)")
+                    log.info("    → LLM classified as DISMISSED (menu closed)")
                     ToolResponseAnalysis(
                         stateType = ToolResponseAnalysis.StateType.DISMISSED,
                         reasoning = reasoning,
@@ -647,12 +667,12 @@ Return JSON:
                     )
                 }
                 else -> {
-                    println("    → LLM returned unknown state type, using fallback")
+                    log.debug("    → LLM returned unknown state type, using fallback")
                     fallbackAnalysis(hasDialog, hasInline, hasPopupList, menuItemLabels)
                 }
             }
         } catch (e: Exception) {
-            println("    LLM analysis failed: ${e.message}, using fallback")
+            log.warn("    LLM analysis failed: ${e.message}, using fallback")
             fallbackAnalysis(hasDialog, hasInline, hasPopupList, menuItemLabels)
         }
     }
@@ -727,7 +747,7 @@ Return JSON:
         if (uiTree == null || uiTree.isEmpty()) return "(empty)"
 
         val sb = StringBuilder()
-        val allComponents = UiTreeParser.flatten(uiTree).take(50) // Limit for token efficiency
+        val allComponents = UiTreeParser.flatten(uiTree).take(maxSnapshotComponents) // Limit for token efficiency
 
         for (component in allComponents) {
             val label = component.label.ifBlank { component.accessibleName.ifBlank { component.text } }

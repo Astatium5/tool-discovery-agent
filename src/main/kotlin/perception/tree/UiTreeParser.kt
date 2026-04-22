@@ -1,4 +1,4 @@
-package perception.parser
+package perception.tree
 
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element

@@ -2,7 +2,7 @@ package agent
 
 import dev.langchain4j.model.chat.ChatModel
 import execution.UiExecutor
-import llm.LlmModel
+import llm.LlmConfig
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
@@ -30,11 +30,8 @@ class UiAgentTest : BaseTest() {
 
     @BeforeEach
     fun setup() {
-        llm = LlmModel.create(
-            apiKey = System.getenv("LLM_API_KEY") ?: "",
-            baseUrl = System.getenv("LLM_BASE_URL") ?: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            model = System.getenv("LLM_MODEL") ?: "qwen3.5-plus",
-        )
+        val config = LlmConfig.loadFromEnv()
+        llm = config.createChatModel()
         profile = ApplicationProfile.loadFromFile("build/reports/app-profile.json")
             ?: ApplicationProfile(appName = "IntelliJ IDEA")
 

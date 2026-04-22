@@ -4,7 +4,7 @@ import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.model.chat.ChatModel
 import execution.UiExecutor
-import perception.parser.UiTreeProvider
+import perception.tree.UiTreeProvider
 
 /**
  * Multi-phase profiling agent that discovers and classifies UI component classes.
@@ -209,8 +209,8 @@ Return JSON array only, no markdown fences:
             }
 
         val newMappings = classifyAll(contextList)
-        profile.merge(newMappings)
-        profile.saveToFile(profilePath)
+        val updatedProfile = profile.merge(newMappings)
+        updatedProfile.saveToFile(profilePath)
         return newMappings
     }
 
@@ -324,10 +324,11 @@ Return JSON array only, no markdown fences:
                 .replace("{{MISSING_ROLES}}", rolesDescription)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from(SYSTEM_PROMPT),
-                UserMessage.from(prompt),
-            )
+            val response =
+                llm.chat(
+                    SystemMessage.from(SYSTEM_PROMPT),
+                    UserMessage.from(prompt),
+                )
             val parsed = parseClassifications(response.aiMessage().text())
             println("      Inferred: ${parsed.entries.joinToString(", ") { "${it.key} -> ${it.value}" }}")
             parsed
@@ -380,10 +381,11 @@ Return JSON array only, no markdown fences:
         val prompt = CLASSIFICATION_PROMPT_TEMPLATE.replace("{{CLASSES}}", classesBlock)
 
         return try {
-            val response = llm.chat(
-                SystemMessage.from(SYSTEM_PROMPT),
-                UserMessage.from(prompt),
-            )
+            val response =
+                llm.chat(
+                    SystemMessage.from(SYSTEM_PROMPT),
+                    UserMessage.from(prompt),
+                )
             parseClassifications(response.aiMessage().text())
         } catch (e: Exception) {
             println("  UIProfiler: LLM classification failed: ${e.message}")

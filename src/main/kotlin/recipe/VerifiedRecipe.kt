@@ -98,6 +98,11 @@ data class VerifiedRecipe(
                         target = params["target"] ?: "",
                         checked = params["checked"]?.toBoolean() ?: true,
                     )
+                "table_row_action" ->
+                    AgentAction.TableRowAction(
+                        action = params["action"] ?: "",
+                        rowIndex = params["rowIndex"]?.toIntOrNull(),
+                    )
                 "scroll" ->
                     AgentAction.Scroll(
                         direction = params["direction"] ?: "down",
@@ -169,6 +174,14 @@ data class VerifiedRecipe(
                             mapOf(
                                 "target" to action.target,
                                 "checked" to action.checked.toString(),
+                            ),
+                        )
+                    is AgentAction.TableRowAction ->
+                        ActionJson(
+                            "table_row_action",
+                            mapOf(
+                                "action" to action.action,
+                                "rowIndex" to (action.rowIndex?.toString() ?: ""),
                             ),
                         )
                     is AgentAction.Scroll ->

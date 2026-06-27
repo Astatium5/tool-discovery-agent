@@ -84,6 +84,30 @@ object ScopedSnapshotBuilder {
         }
     }
 
+    /**
+     * Notification balloons / toasts are transient windows that hold NO
+     * actionable UI. They must not count as "a popup is open" for
+     * inline-widget detection or diff-based completion — the post-rename
+     * "N usages renamed" balloon is exactly what kept both stuck.
+     */
+    private fun looksLikeNotificationByName(cls: String): Boolean =
+        cls.contains("Balloon", ignoreCase = true) ||
+            cls.contains("Notification", ignoreCase = true) ||
+            cls.contains("Toast", ignoreCase = true)
+
+    /**
+     * True when [window] is (or merely hosts) a notification balloon/toast.
+     * Checks the whole subtree because IntelliJ wraps balloons in a plain
+     * `HeavyWeightWindow` whose own class name is uninformative.
+     */
+    fun isNotificationWindow(window: UiComponent): Boolean {
+        fun walk(n: UiComponent): Boolean {
+            if (looksLikeNotificationByName(n.cls)) return true
+            return n.children.any { walk(it) }
+        }
+        return walk(window)
+    }
+
     private fun looksLikeDialogByName(cls: String): Boolean =
         cls == "DialogRootPane" ||
             cls == "MyDialog" ||
@@ -759,6 +783,20 @@ object ScopedSnapshotBuilder {
         val dialogLike = all.any { looksLikeDialogByName(it.cls) }
         val focusedAccName = all.firstOrNull { it.focused }?.accessibleName ?: ""
 
+        // Live TEXT of input fields inside the topmost window. Field labels
+        // (accessible names) don't change when the user types, so without
+        // this the fingerprint was blind to `Type` actions inside dialogs —
+        // the stagnation guard then read "NO PROGRESS" and failed Change
+        // Signature runs for doing the right thing. The @text attribute is
+        // already in the HTML tree, so this costs no extra round-trip.
+        val activeFieldTexts =
+            topWindow?.let { w ->
+                UiTreeParser.flatten(listOf(w))
+                    .filter { isTextField(it.cls, p) || isList(it.cls, p) }
+                    .map { it.text.trim() }
+                    .filter { it.isNotBlank() }
+            } ?: emptyList()
+
         val fingerprint =
             fingerprintOf(
                 ctx = activeContext,
@@ -774,6 +812,7 @@ object ScopedSnapshotBuilder {
                 editorFile = finalFile,
                 inlineWidget = inlineWidget,
                 editorCode = editorCode,
+                activeFieldTexts = activeFieldTexts,
             )
 
         return CompactSnapshot(
@@ -1028,6 +1067,24 @@ object ScopedSnapshotBuilder {
             }
         }
 
+        // Surface tables/lists that have NO label at all (Change Signature's
+        // parameter JBTable renders cells via renderers, so the component
+        // carries no accessible name and the `children` filter above drops
+        // it). Without this the LLM doesn't even know a table exists and
+        // can't reach for table_row_action.
+        UiTreeParser.flatten(listOf(window))
+            .filter { isList(it.cls, p) }
+            .filter { it.label.isBlank() || it.label == it.cls }
+            .forEach { t ->
+                fields +=
+                    InteractiveItem(
+                        role = "table",
+                        label = "(${t.cls} — rows not readable; use table_row_action to operate)",
+                        enabled = t.enabled,
+                        shortcutHint = null,
+                    )
+            }
+
         // Deduplicate by label while preserving order.
         val dedup: (List<InteractiveItem>) -> List<InteractiveItem> = { list ->
             list.distinctBy { it.label.lowercase() to it.role }
@@ -1081,6 +1138,12 @@ object ScopedSnapshotBuilder {
     ): InlineWidget? {
         if (dialogs.isNotEmpty()) return null
 
+        // Notification balloons ("3 usages renamed", indexing toasts, …) are
+        // popups in the tree but carry zero inline-template signal. Post-
+        // commit they kept the detector reporting INLINE_WIDGET, which told
+        // the LLM to type the new name AGAIN into the source file.
+        val signalPopups = popups.filterNot { isNotificationWindow(it) }
+
         // Signal 1 — focused editor with a non-blank accessible name/text.
         // IntelliJ re-uses the main `EditorComponentImpl` as the template
         // surface, so focus landing there + a recent refactor action is a
@@ -1094,7 +1157,7 @@ object ScopedSnapshotBuilder {
         // descendants. The IntelliJ suggestion popup for rename uses
         // `JBList` of candidates; the keyboard-hint popup uses a label
         // containing "Press ↵ or → to replace".
-        val topPopup = popups.lastOrNull()
+        val topPopup = signalPopups.lastOrNull()
         val topHasMenuItems =
             topPopup
                 ?.let { UiTreeParser.flatten(listOf(it)) }
@@ -1126,7 +1189,7 @@ object ScopedSnapshotBuilder {
 
         // Hint label anywhere in the popups (keyboard shortcut tip).
         val hint =
-            popups.asSequence()
+            signalPopups.asSequence()
                 .flatMap { UiTreeParser.flatten(listOf(it)).asSequence() }
                 .map { it.label }
                 .firstOrNull { it.contains("replace", ignoreCase = true) && it.contains("Press", ignoreCase = true) }
@@ -1144,20 +1207,21 @@ object ScopedSnapshotBuilder {
             editorCode?.selectedText
                 ?.takeIf { it.isNotBlank() && looksLikeIdentifier(it) }
         val hasSelectionSignal =
-            selectedIdentifier != null && popups.isNotEmpty()
+            selectedIdentifier != null && signalPopups.isNotEmpty()
 
-        // Decision:
-        //  - Strong signal: suggestion list, hint, or selected-identifier + popup.
-        //  - Weaker signal: focused editor AND a popup that is not a menu.
+        // Decision: STRONG signals only — a suggestion list, the IDE's own
+        // "Press ↵ to replace" hint, or a selected identifier with a live
+        // (non-notification) popup. The previous "weak" signal — focused
+        // editor + any non-menu popup — false-positived AFTER a rename
+        // committed (the main editor is always focused, and a lingering
+        // hint/balloon satisfied the popup half), which made the prompt's
+        // Rule 8 push the LLM to type the new name a second time into the
+        // source file. If a real template is live, at least one strong
+        // signal is always present.
         val hasStrongSignal =
             suggestions.isNotEmpty() || hint.isNotBlank() || hasSelectionSignal
-        val hasWeakSignal =
-            focusedEditor != null &&
-                topPopup != null &&
-                !topHasMenuItems &&
-                !topHasButtons
 
-        if (!hasStrongSignal && !hasWeakSignal) return null
+        if (!hasStrongSignal) return null
 
         // Old identifier: prefer the live selection, then the focused editor's
         // label, then the focused component's label. The selection is the most
@@ -1241,6 +1305,7 @@ object ScopedSnapshotBuilder {
         editorFile: String,
         inlineWidget: InlineWidget?,
         editorCode: EditorCode? = null,
+        activeFieldTexts: List<String> = emptyList(),
     ): String {
         val parts = mutableListOf<String>()
         parts += "ctx=${ctx.name}"
@@ -1248,8 +1313,13 @@ object ScopedSnapshotBuilder {
         parts += "focused=${focused?.let { "${it.role}:${it.label}" } ?: "-"}"
         parts += "title=${active.title}"
         parts += "fields=" + active.fields.map { it.label.lowercase() }.sorted().joinToString(",")
-        parts += "buttons=" + active.buttons.map { it.label.lowercase() }.sorted().joinToString(",")
+        // Buttons fold in their ENABLED state: dialogs often react to typing
+        // by enabling/disabling the commit button, which is sometimes the
+        // only perceivable change after a Type action.
+        parts += "buttons=" + active.buttons.map { "${it.label.lowercase()}:${it.enabled}" }.sorted().joinToString(",")
         parts += "menu=" + active.menuItems.map { it.label.lowercase() }.sorted().joinToString(",")
+        // Live field text inside the active window (see buildCompactSnapshot).
+        parts += "fieldTexts=" + activeFieldTexts.sorted().joinToString("\u0001")
         // Tree-wide signals — change regardless of profile coverage.
         parts += "menuCount=$menuItemCount"
         parts += "popup=$popupLike"

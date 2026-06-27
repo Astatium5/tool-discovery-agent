@@ -23,3 +23,13 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# PromptLogger output (per-session LLM request/response dumps)
+sent_prompt/
+!intellij-plugin/sent_prompt/
+.idea
+plans
+.kilo/
+docs/
+overleaf-milestone4/
+.cursor

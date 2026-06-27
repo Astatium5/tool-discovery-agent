@@ -9,8 +9,7 @@ import perception.parser.HtmlUiTreeProvider
 import perception.parser.UiComponent
 import perception.parser.UiTreeParser
 import perception.parser.UiTreeProvider
-import java.awt.Robot
-import java.awt.event.InputEvent
+import java.awt.Point
 import java.awt.event.KeyEvent
 import java.time.Duration
 
@@ -220,8 +219,9 @@ class UiExecutor(
             throw IllegalStateException("Symbol '$symbol' not found in editor")
         }
 
-        Thread.sleep(500)
-
+        // No settle sleep needed: the caret move runs synchronously inside the
+        // JS via invokeAndWait, so the document/caret state is already updated
+        // by the time the payload is returned.
         val parts = payload.split("|")
         return MoveCaretOutcome(
             line = parts.getOrNull(0)?.toIntOrNull() ?: 0,
@@ -282,30 +282,33 @@ class UiExecutor(
             'OK';
             """.trimIndent(),
         )
-        Thread.sleep(300)
+        // The selection update runs synchronously inside invokeAndWait, so no
+        // post-call settle sleep is required.
     }
 
     fun pressShortcut(keys: String) {
         val keyCodes = parseShortcutKeys(keys)
-        val awtRobot = java.awt.Robot()
-
-        val modifiers = keyCodes.dropLast(1)
-        val mainKey = keyCodes.last()
-
-        modifiers.forEach { awtRobot.keyPress(it) }
-        Thread.sleep(50)
-        awtRobot.keyPress(mainKey)
-        Thread.sleep(50)
-        awtRobot.keyRelease(mainKey)
-        modifiers.reversed().forEach { awtRobot.keyRelease(it) }
+        // RemoteRobot's hotKey presses every key in order then releases them
+        // in reverse — exactly the modifier-then-main-key chord the old AWT
+        // path emitted — but injected server-side inside the IDE JVM so it
+        // works regardless of which process owns the host's focus.
+        robot.keyboard { hotKey(*keyCodes.toIntArray()) }
         Thread.sleep(500)
     }
 
     fun openContextMenu() {
         val editor = findFocusedEditor()
-        val coords = getCaretScreenCoords(editor)
-        rightClickAt(coords.x, coords.y)
-        Thread.sleep(800)
+        // RemoteRobot's rightClick(Point) takes coordinates relative to the
+        // fixture's component (the EditorComponentImpl, which is the editor's
+        // content component). offsetToXY already yields content-relative
+        // coords, so no getLocationOnScreen math is needed.
+        val coords = getCaretComponentCoords(editor)
+        val beforeCount = countTransientWindows(runCatching { fetchUiTree() }.getOrNull() ?: emptyList())
+        editor.rightClick(Point(coords.x, coords.y))
+        // Wait for the context menu (a new transient window) to render instead
+        // of a fixed sleep. Falls through after the timeout so a missed
+        // detection doesn't hang the agent.
+        waitUntil(timeout = Duration.ofSeconds(2)) { countTransientWindows(it) > beforeCount }
     }
 
     /**
@@ -451,10 +454,29 @@ class UiExecutor(
             throw lastError ?: IllegalStateException("Menu item '$label' not found")
         }
 
-        val coords = getComponentScreenCenter(item)
-        clickAt(coords.x, coords.y)
-        Thread.sleep(600)
+        // The menu is open while we click, so it's already a transient window.
+        // Most outcomes change the transient window count (submenu: grows,
+        // dismissal: shrinks) — but a menu→dialog swap can be count-neutral
+        // (1 menu closes, 1 dialog opens), so we ALSO fire on a dialog
+        // appearing where there was none. The authoritative classification
+        // still runs afterward in ActionGenerator.performMenuClick.
+        val beforeTree = runCatching { fetchUiTree() }.getOrNull() ?: emptyList()
+        val beforeCount = countTransientWindows(beforeTree)
+        val beforeHadDialog = treeHasDialog(beforeTree)
+        item.click()
+        waitUntil(timeout = Duration.ofSeconds(2)) { tree ->
+            countTransientWindows(tree) != beforeCount || (!beforeHadDialog && treeHasDialog(tree))
+        }
     }
+
+    /**
+     * Tree-only probe for a visible dialog, by class-name convention. Used
+     * by wait predicates that must not call `callJs` (see [waitUntil]).
+     */
+    private fun treeHasDialog(roots: List<UiComponent>): Boolean =
+        UiTreeParser.flatten(roots).any { c ->
+            c.cls == "JDialog" || c.cls == "DialogRootPane" || c.cls == "MyDialog" || c.cls.endsWith("Dialog")
+        }
 
     /** XPath 1.0-safe literal wrap for a string that may contain single quotes. */
     private fun xpathQuote(s: String): String {
@@ -545,7 +567,29 @@ class UiExecutor(
 
             robot.keyboard { enterText(value) }
         }
-        Thread.sleep(300)
+        // Settle: for a plain text field, wait until its content reflects the
+        // characters we typed rather than guessing with a fixed sleep. The
+        // dialog is already fully constructed by the time we type, so the
+        // readTextLength callJs here is safe from the modal-EDT wedge. Inline
+        // editor templates don't expose a usable length, so fall back to a
+        // short fixed settle there.
+        if (focusedField != null && !focusedIsEditorComponent && value.isNotEmpty()) {
+            val deadline = System.currentTimeMillis() + 1500
+            while (System.currentTimeMillis() < deadline) {
+                val len = readTextLength(focusedField)
+                if (len < 0) {
+                    // Length unreadable (JS bridge failure / editor-backed
+                    // field) — we can't verify, so fall back to a fixed settle
+                    // instead of spinning until the deadline.
+                    Thread.sleep(300)
+                    break
+                }
+                if (len >= value.length) break
+                Thread.sleep(100)
+            }
+        } else {
+            Thread.sleep(300)
+        }
 
         // Dismiss any autocomplete/lookup popup that may have appeared after
         // typing — but ONLY when we're typing into a plain field. Inside an
@@ -624,10 +668,14 @@ class UiExecutor(
     private fun clearFieldWithJs(field: ComponentFixture) {
         // Preferred: ask the component for its current text so we know whether
         // select-all+delete actually worked, and can fall back to backspaces.
+        // -1 means UNKNOWN (bridge failure / no getText hook): assume the
+        // field is non-empty and clear anyway — the old behaviour mapped
+        // unknown to 0 and SKIPPED the clear, leaving stale text that the
+        // subsequent enterText silently appended to.
         val initialLength = readTextLength(field)
         if (initialLength == 0) {
-            // Already empty — nothing to do. Avoids stray keystrokes that could
-            // dismiss popups or trigger shortcuts.
+            // Confirmed empty — nothing to do. Avoids stray keystrokes that
+            // could dismiss popups or trigger shortcuts.
             println("  clearFieldWithJs: field already empty, skip")
             return
         }
@@ -640,9 +688,11 @@ class UiExecutor(
         // whose key bindings don't honour the default select-all shortcut
         // (some custom renderers, combo editors, or platforms where the
         // focused window is inside a popup that intercepts Cmd/Ctrl+A).
+        // When the length is unknown (-1) we can't verify — trust the
+        // select-all+delete and move on.
         val afterLength = readTextLength(field)
         if (afterLength > 0) {
-            val n = afterLength.coerceAtMost(initialLength)
+            val n = if (initialLength > 0) afterLength.coerceAtMost(initialLength) else afterLength
             println("  clearFieldWithJs: select-all+delete left $afterLength chars — falling back to $n backspaces")
             backspaceN(n)
         }
@@ -675,14 +725,14 @@ class UiExecutor(
                     -1;
                 }
                 """.trimIndent()
-            val result = field.callJs<Int>(js)
-            if (result < 0) 0 else result
+            field.callJs<Int>(js)
         } catch (e: Exception) {
-            println("  readTextLength: JS bridge failed (${e.message}); assuming non-empty")
-            // Assume non-empty so callers still attempt to clear; backspace
-            // fallback will stop once the field is empty (enterText afterwards
-            // ignores stale content anyway).
-            0
+            println("  readTextLength: JS bridge failed (${e.message}); length unknown")
+            // -1 = unknown. Callers decide: clearFieldWithJs clears anyway,
+            // typeInDialog's settle-poll falls back to a fixed sleep. The
+            // previous code returned 0 here, which read as "confirmed empty"
+            // and made clearFieldWithJs skip clearing entirely.
+            -1
         }
     }
 
@@ -784,59 +834,54 @@ class UiExecutor(
     fun clickDialogButton(label: String) {
         println("  [clickDialogButton] Starting search for button '$label'...")
 
-        // Strategy 1: Find by text attribute (most reliable, like clickMenuItem)
-        println("  [clickDialogButton] Strategy 1: Searching by @text attribute...")
-        val button =
+        // XPath-safe literal (labels with quotes used to break the query) and
+        // a class selector that also matches JBOptionButton — newer IntelliJ
+        // renders "Refactor" as a split JBOptionButton, which the previous
+        // JButton-only matcher could never find.
+        val quoted = xpathQuote(label)
+        val buttonClassSelector =
+            "(@class='JButton' or @class='JBOptionButton' or contains(@class,'OptionButton'))"
+
+        // Prefer buttons inside the TOPMOST dialog/popup; only then fall back
+        // to a global search. The old global-only XPaths could match a
+        // same-labelled component behind the dialog.
+        val container = "(//div[@class='HeavyWeightWindow' or @class='DialogRootPane' or @class='JDialog' or @class='MyDialog'])[last()]"
+        val strategies =
+            listOf(
+                "$container//div[$buttonClassSelector and contains(@text, $quoted)]",
+                "$container//div[$buttonClassSelector and contains(@accessiblename, $quoted)]",
+                "$container//div[$buttonClassSelector and contains(@visible_text, $quoted)]",
+                "//div[$buttonClassSelector and contains(@text, $quoted)]",
+                "//div[$buttonClassSelector and @accessiblename=$quoted]",
+                "//div[$buttonClassSelector and @visible_text=$quoted]",
+            )
+
+        var button: ComponentFixture? = null
+        var lastError: Exception? = null
+        for ((i, xp) in strategies.withIndex()) {
             try {
-                val found =
-                    robot.find<ComponentFixture>(
-                        byXpath("//div[@class='JButton' and contains(@text, '$label')]"),
-                        Duration.ofSeconds(3),
-                    )
-                println("  [clickDialogButton] Strategy 1 SUCCESS: Found button by @text")
-                found
-            } catch (e1: Exception) {
-                println("  [clickDialogButton] Strategy 1 FAILED: ${e1.message}")
-
-                // Strategy 2: Find by accessible name
-                println("  [clickDialogButton] Strategy 2: Searching by @accessiblename attribute...")
-                try {
-                    val found =
-                        robot.find<ComponentFixture>(
-                            byXpath("//div[@accessiblename='$label' and @class='JButton']"),
-                            Duration.ofSeconds(3),
-                        )
-                    println("  [clickDialogButton] Strategy 2 SUCCESS: Found button by @accessiblename")
-                    found
-                } catch (e2: Exception) {
-                    println("  [clickDialogButton] Strategy 2 FAILED: ${e2.message}")
-
-                    // Strategy 3: Find by visible_text
-                    println("  [clickDialogButton] Strategy 3: Searching by @visible_text attribute...")
-                    try {
-                        val found =
-                            robot.find<ComponentFixture>(
-                                byXpath("//div[@visible_text='$label' and @class='JButton']"),
-                                Duration.ofSeconds(3),
-                            )
-                        println("  [clickDialogButton] Strategy 3 SUCCESS: Found button by @visible_text")
-                        found
-                    } catch (e3: Exception) {
-                        println("  [clickDialogButton] Strategy 3 FAILED: ${e3.message}")
-                        println("  [clickDialogButton] ALL STRATEGIES FAILED - throwing exception")
-                        throw e3
-                    }
-                }
+                button = robot.find<ComponentFixture>(byXpath(xp), Duration.ofSeconds(3))
+                println("  [clickDialogButton] strategy ${i + 1} matched")
+                break
+            } catch (e: Exception) {
+                lastError = e
             }
+        }
 
-        println("  [clickDialogButton] Button found, getting screen coordinates...")
-        val coords = getComponentScreenCenter(button)
-        println("  [clickDialogButton] Button center: (${coords.x}, ${coords.y})")
+        if (button == null) {
+            println("  [clickDialogButton] ALL strategies failed for '$label'")
+            throw lastError ?: IllegalStateException("Dialog button '$label' not found")
+        }
 
-        println("  [clickDialogButton] Clicking at (${coords.x}, ${coords.y})...")
-        clickAt(coords.x, coords.y)
-        println("  [clickDialogButton] Click completed, waiting 800ms...")
-        Thread.sleep(800)
+        println("  [clickDialogButton] Button found, clicking via RemoteRobot...")
+        // Confirm/Cancel/Refactor/OK buttons close (or advance) the dialog, so
+        // wait for the transient window stack to shrink instead of a fixed
+        // sleep. Proceeds after the timeout for buttons that mutate the dialog
+        // in place without closing it.
+        val beforeCount = countTransientWindows(runCatching { fetchUiTree() }.getOrNull() ?: emptyList())
+        button.click()
+        val closed = waitUntil(timeout = Duration.ofSeconds(2)) { countTransientWindows(it) < beforeCount }
+        println("  [clickDialogButton] Click completed (dialogClosed=$closed)")
         println("  [clickDialogButton] Done")
     }
 
@@ -846,49 +891,53 @@ class UiExecutor(
     }
 
     fun pressKey(keyName: String) {
+        // Normalize "ArrowDown" / "Page_Up" / "page down" → "arrowdown" /
+        // "pageup" / "pagedown" so every spelling the LLM (or executeScroll)
+        // produces maps to one canonical key.
+        val normalized = keyName.lowercase().replace("_", "").replace(" ", "")
         val keyCode =
-            when (keyName.lowercase()) {
-                "enter" -> KeyEvent.VK_ENTER
+            when (normalized) {
+                "enter", "return" -> KeyEvent.VK_ENTER
                 "escape", "esc" -> KeyEvent.VK_ESCAPE
                 "tab" -> KeyEvent.VK_TAB
                 "backspace" -> KeyEvent.VK_BACK_SPACE
                 "delete" -> KeyEvent.VK_DELETE
                 "space" -> KeyEvent.VK_SPACE
-                "up" -> KeyEvent.VK_UP
-                "down" -> KeyEvent.VK_DOWN
-                "left" -> KeyEvent.VK_LEFT
-                "right" -> KeyEvent.VK_RIGHT
-                else -> KeyEvent.VK_ENTER
+                "up", "arrowup" -> KeyEvent.VK_UP
+                "down", "arrowdown" -> KeyEvent.VK_DOWN
+                "left", "arrowleft" -> KeyEvent.VK_LEFT
+                "right", "arrowright" -> KeyEvent.VK_RIGHT
+                "pageup" -> KeyEvent.VK_PAGE_UP
+                "pagedown" -> KeyEvent.VK_PAGE_DOWN
+                "home" -> KeyEvent.VK_HOME
+                "end" -> KeyEvent.VK_END
+                // NEVER default to Enter: the old fallback silently committed
+                // dialogs/templates whenever the LLM sent an unmapped key
+                // name (the prompt itself suggests "ArrowDown", which used
+                // to land here and press Enter). Fail loudly so the agent
+                // loop reports the bad key back to the LLM instead.
+                else -> throw IllegalArgumentException(
+                    "Unknown key name '$keyName' — supported: Enter, Escape, Tab, " +
+                        "Backspace, Delete, Space, Up/Down/Left/Right (Arrow*), " +
+                        "PageUp, PageDown, Home, End",
+                )
             }
         robot.keyboard { key(keyCode) }
         Thread.sleep(300)
     }
 
-    // ── AWT Robot (bypasses RemoteRobot HTTP layer) ─────────────────────────────
+    // ── Direct key injection ────────────────────────────────────────────────
 
     /**
-     * AWT Robot for direct keyboard input that bypasses RemoteRobot's HTTP layer.
-     * Use this when RemoteRobot times out due to IDE being busy (e.g., signature preview computation).
-     */
-    private val awtRobot: Robot by lazy {
-        Robot().apply { autoDelay = 50 }
-    }
-
-    /**
-     * Press a key directly using AWT Robot.
-     * This bypasses RemoteRobot's HTTP layer and works even when the IDE is busy.
+     * Press a key or chord by name. Retained as a thin alias over
+     * [pressShortcut] so existing callers keep working; both now route
+     * through RemoteRobot's server-side keyboard rather than a test-JVM
+     * AWT `Robot` (the OS-level escape hatch was removed when the input
+     * layer was unified on RemoteRobot).
      */
     fun pressKeyDirect(keyName: String) {
-        println("  pressKeyDirect: Pressing '$keyName' via AWT Robot")
-        val keyCodes = parseShortcutKeys(keyName)
-        for (keyCode in keyCodes) {
-            awtRobot.keyPress(keyCode)
-        }
-        // Release in reverse order
-        for (keyCode in keyCodes.reversed()) {
-            awtRobot.keyRelease(keyCode)
-        }
-        Thread.sleep(300)
+        println("  pressKeyDirect: Pressing '$keyName' via RemoteRobot keyboard")
+        pressShortcut(keyName)
     }
 
     // ── Field Navigation steps ────────────────────────────────────────────────
@@ -1029,10 +1078,17 @@ class UiExecutor(
         println("  Could not find checkbox '$fieldLabel'")
     }
 
+    /**
+     * Select [rowIndex] in the active dialog's table (when given), then click
+     * the row-action button labelled [action] ("Add", "Remove", "Move Up", …).
+     * Returns true only when the action button was found and clicked, so the
+     * agent loop can report an honest result to the LLM instead of the old
+     * print-and-swallow behaviour.
+     */
     fun tableRowAction(
         action: String,
         rowIndex: Int?,
-    ) {
+    ): Boolean {
         val container = "(//div[@class='HeavyWeightWindow' or @class='DialogRootPane'])[last()]"
         val timeout = Duration.ofSeconds(3)
 
@@ -1043,24 +1099,34 @@ class UiExecutor(
                         byXpath("$container//div[@class='JBTable' or @class='JTable']"),
                         timeout,
                     )
-                table.callJs<String>("component.setRowSelectionInterval($rowIndex, $rowIndex)")
+                table.callJs<String>("component.setRowSelectionInterval($rowIndex, $rowIndex); 'OK';")
                 Thread.sleep(200)
             } catch (_: Exception) {
                 println("  Could not find table to select row $rowIndex")
             }
         }
 
-        try {
-            val button =
-                robot.find<ComponentFixture>(
-                    byXpath("$container//div[@class='JButton' and (@visible_text='$action' or @accessiblename='$action')]"),
-                    timeout,
-                )
-            button.click()
-            Thread.sleep(300)
-        } catch (_: Exception) {
-            println("  Could not find table action button '$action'")
+        val quoted = xpathQuote(action)
+        // Row-action buttons are JButtons in classic dialogs but icon-only
+        // ActionButtons on the table toolbar in newer IntelliJ — match both,
+        // by visible text, accessible name, or tooltip.
+        val strategies =
+            listOf(
+                "$container//div[@class='JButton' and (@visible_text=$quoted or contains(@accessiblename, $quoted))]",
+                "$container//div[contains(@class,'ActionButton') and (contains(@accessiblename, $quoted) or contains(@tooltiptext, $quoted))]",
+                "$container//div[contains(@class,'Button') and contains(@accessiblename, $quoted)]",
+            )
+        for (xp in strategies) {
+            try {
+                val button = robot.find<ComponentFixture>(byXpath(xp), timeout)
+                button.click()
+                Thread.sleep(300)
+                return true
+            } catch (_: Exception) {
+            }
         }
+        println("  Could not find table action button '$action'")
+        return false
     }
 
     fun typeText(text: String) {
@@ -1084,20 +1150,40 @@ class UiExecutor(
         ideFrame.click()
         Thread.sleep(200)
 
-        robot.keyboard {
-            pressing(KeyEvent.VK_META) {
-                pressing(KeyEvent.VK_SHIFT) {
-                    key(KeyEvent.VK_O)
+        // Go-to-file shortcut is OS-specific: Cmd+Shift+O on macOS,
+        // Ctrl+Shift+N on Windows/Linux. The previous hard-coded Meta chord
+        // was a silent no-op on non-mac runners.
+        if (isMacOs) {
+            robot.keyboard {
+                pressing(KeyEvent.VK_META) {
+                    pressing(KeyEvent.VK_SHIFT) {
+                        key(KeyEvent.VK_O)
+                    }
+                }
+            }
+        } else {
+            robot.keyboard {
+                pressing(KeyEvent.VK_CONTROL) {
+                    pressing(KeyEvent.VK_SHIFT) {
+                        key(KeyEvent.VK_N)
+                    }
                 }
             }
         }
-        Thread.sleep(1000)
+        // Wait for the Search Everywhere popup (a transient window) to render
+        // before typing, rather than assuming it appears within a fixed delay.
+        waitUntil(timeout = Duration.ofSeconds(3)) { countTransientWindows(it) > 0 }
 
         robot.keyboard { enterText(normalizedPath) }
-        Thread.sleep(1000)
+        // Wait for the results list to populate so Enter lands on a real match.
+        waitUntil(timeout = Duration.ofSeconds(2)) { tree ->
+            UiTreeParser.flatten(tree).any { it.cls.contains("List") }
+        }
 
         robot.keyboard { key(KeyEvent.VK_ENTER) }
-        Thread.sleep(1000)
+        // Wait for Search Everywhere to dismiss, signalling the file is opening.
+        // ActionGenerator.executeOpenFile then confirms the editor is visible.
+        waitUntil(timeout = Duration.ofSeconds(3)) { countTransientWindows(it) == 0 }
     }
 
     /**
@@ -1447,6 +1533,35 @@ class UiExecutor(
     fun fetchUiTree(): List<UiComponent> = treeProvider.fetchTree()
 
     /**
+     * Poll the HTML UI tree until [predicate] holds or [timeout] elapses,
+     * returning whether the predicate became true in time.
+     *
+     * TREE-ONLY by contract: the predicate is handed the parsed component
+     * tree fetched over `/api/tree`, and it MUST NOT trigger a `callJs`
+     * round-trip. Polling via `callJs` while a modal dialog is on top
+     * re-enters IntelliJ's nested EDT loop and wedges Remote Robot's
+     * serialized dispatch queue (the failure documented throughout
+     * [ActionGenerator]). Staying on the tree keeps waits safe under modal
+     * dialogs and replaces the brittle fixed [Thread.sleep] delays that used
+     * to follow every UI-triggering action.
+     */
+    private fun waitUntil(
+        timeout: Duration = defaultTimeout,
+        interval: Duration = Duration.ofMillis(250),
+        predicate: (List<UiComponent>) -> Boolean,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + timeout.toMillis()
+        while (System.currentTimeMillis() < deadline) {
+            val tree = runCatching { fetchUiTree() }.getOrNull()
+            if (tree != null && runCatching { predicate(tree) }.getOrDefault(false)) {
+                return true
+            }
+            Thread.sleep(interval.toMillis())
+        }
+        return false
+    }
+
+    /**
      * Full text of the currently-open document. Returns `null` on any
      * failure (no project open, no focused editor, JS call fails).
      *
@@ -1674,12 +1789,21 @@ class UiExecutor(
             ?: throw IllegalStateException("No editor component found")
     }
 
-    private fun getCaretScreenCoords(editor: ComponentFixture): ScreenCoords {
+    /**
+     * Caret position **relative to the editor's content component** (the
+     * `EditorComponentImpl` fixture). `offsetToXY` already returns
+     * content-relative coordinates, so — unlike the old screen-coordinate
+     * variant — we never call `getLocationOnScreen`. The +8 nudges the click
+     * point onto the caret's text line rather than its top edge. The result
+     * is fed straight to `ComponentFixture.rightClick(Point)`, which resolves
+     * everything server-side inside the IDE JVM.
+     */
+    private fun getCaretComponentCoords(editor: ComponentFixture): ScreenCoords {
         val coordResult =
             editor.callJs<String>(
                 """
-                var screenX = -1;
-                var screenY = -1;
+                var x = -1;
+                var y = -1;
                 com.intellij.openapi.application.ApplicationManager
                     .getApplication().invokeAndWait(new Runnable() {
                         run: function() {
@@ -1690,43 +1814,17 @@ class UiExecutor(
                             if (editorEx != null) {
                                 var caretOffset = editorEx.getCaretModel().getOffset();
                                 var pos = editorEx.offsetToXY(caretOffset);
-                                var editorComp = editorEx.getContentComponent();
-                                var loc = editorComp.getLocationOnScreen();
-                                screenX = loc.x + pos.x;
-                                screenY = loc.y + pos.y + 8;
+                                x = pos.x;
+                                y = pos.y + 8;
                             }
                         }
                     });
-                screenX + ',' + screenY;
+                x + ',' + y;
                 """.trimIndent(),
             )
 
         val parts = coordResult.split(",")
         return ScreenCoords(parts[0].trim().toInt(), parts[1].trim().toInt())
-    }
-
-    private fun getComponentScreenCenter(component: ComponentFixture): ScreenCoords {
-        val result =
-            component.callJs<String>(
-                """
-                var screenX = -1;
-                var screenY = -1;
-                com.intellij.openapi.application.ApplicationManager
-                    .getApplication().invokeAndWait(new Runnable() {
-                        run: function() {
-                            var loc = component.getLocationOnScreen();
-                            var w = component.getWidth();
-                            var h = component.getHeight();
-                            screenX = loc.x + (w / 2);
-                            screenY = loc.y + (h / 2);
-                        }
-                    });
-                screenX + ',' + screenY;
-                """.trimIndent(),
-            )
-
-        val parts = result.split(",")
-        return ScreenCoords(parts[0].trim().toDouble().toInt(), parts[1].trim().toDouble().toInt())
     }
 
     private fun getComponentBounds(component: ComponentFixture): Triple<Int, Int, Int> {
@@ -1755,30 +1853,6 @@ class UiExecutor(
             parts[1].trim().toDouble().toInt(),
             parts[2].trim().toDouble().toInt(),
         )
-    }
-
-    private fun rightClickAt(
-        x: Int,
-        y: Int,
-    ) {
-        val awtRobot = java.awt.Robot()
-        awtRobot.mouseMove(x, y)
-        Thread.sleep(100)
-        awtRobot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
-        Thread.sleep(100)
-        awtRobot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK)
-    }
-
-    private fun clickAt(
-        x: Int,
-        y: Int,
-    ) {
-        val awtRobot = java.awt.Robot()
-        awtRobot.mouseMove(x, y)
-        Thread.sleep(100)
-        awtRobot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
-        Thread.sleep(100)
-        awtRobot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     }
 
     private fun parseShortcutKeys(shortcut: String): List<Int> {

@@ -246,8 +246,10 @@ Return JSON array only, no markdown fences:
 
         // Probe 2: Search dialog → reveals DialogRootPane, JTextField, JButton, JBList
         try {
-            println("    Probe: Opening search dialog (Cmd+Shift+O)...")
-            exec.pressShortcut("Meta+Shift+O")
+            val isMac = System.getProperty("os.name").orEmpty().lowercase().contains("mac")
+            val goToFileShortcut = if (isMac) "Meta+Shift+O" else "Ctrl+Shift+N"
+            println("    Probe: Opening search dialog ($goToFileShortcut)...")
+            exec.pressShortcut(goToFileShortcut)
             Thread.sleep(1000)
 
             val dialogContexts = treeProvider.fetchClassContexts()

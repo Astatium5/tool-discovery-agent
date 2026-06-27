@@ -76,6 +76,16 @@ sealed class AgentAction {
     data class SetCheckbox(val target: String, val checked: Boolean) : AgentAction()
 
     /**
+     * Operate on the table inside the active dialog: optionally select
+     * [rowIndex] (0-based), then click the row-action button labelled
+     * [action] ("Add", "Remove", "Move Up", …). This is how parameters are
+     * added/removed in the Change Signature dialog, whose JBTable renders
+     * cells via renderers and is otherwise unreachable by label clicks.
+     */
+    @Serializable
+    data class TableRowAction(val action: String, val rowIndex: Int? = null) : AgentAction()
+
+    /**
      * Scroll inside the active window.
      *
      * [target] optionally names a list/tree/table to scroll; when blank the
@@ -132,6 +142,7 @@ sealed class AgentAction {
                 is FocusEditor -> "FocusEditor"
                 is CancelDialog -> "CancelDialog"
                 is SetCheckbox -> "SetCheckbox('${action.target}', ${action.checked})"
+                is TableRowAction -> "TableRowAction('${action.action}', row=${action.rowIndex})"
                 is Scroll -> "Scroll('${action.direction}', target='${action.target}', amount=${action.amount})"
                 is Verify -> "Verify('${action.predicate}')"
                 is Observe -> "Observe"

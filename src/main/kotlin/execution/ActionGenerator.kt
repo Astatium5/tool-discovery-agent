@@ -150,6 +150,7 @@ Return JSON:
             is AgentAction.FocusEditor -> executeFocusEditor()
             is AgentAction.CancelDialog -> executeCancelDialog()
             is AgentAction.SetCheckbox -> executeSetCheckbox(action)
+            is AgentAction.TableRowAction -> executeTableRowAction(action)
             is AgentAction.Scroll -> executeScroll(action)
             is AgentAction.Verify -> executeVerify(action, currentUiTree)
             is AgentAction.Observe -> ActionResult(true, "Observed UI state")
@@ -172,7 +173,6 @@ Return JSON:
     private fun executeOpenFile(action: AgentAction.OpenFile): ActionResult {
         return try {
             executor.openFile(action.path)
-            Thread.sleep(1000)
             val opened = isFileVisiblyOpen(action.path)
             if (opened) {
                 ActionResult(true, "Opened file '${action.path}'")
@@ -214,7 +214,6 @@ Return JSON:
     private fun executeMoveCaret(action: AgentAction.MoveCaret): ActionResult {
         return try {
             val outcome = executor.moveCaret(action.symbol)
-            Thread.sleep(300)
             // When the caret was ALREADY on the symbol, say so explicitly.
             // That's the signal for the LLM to stop re-navigating and
             // invoke the next step (OpenContextMenu, etc.). We still
@@ -241,7 +240,6 @@ Return JSON:
     private fun executeSelectLines(action: AgentAction.SelectLines): ActionResult {
         return try {
             executor.selectLines(action.start, action.end)
-            Thread.sleep(300)
             ActionResult(true, "Selected lines ${action.start}-${action.end}")
         } catch (e: Exception) {
             ActionResult(false, "Failed to select lines: ${e.message}")
@@ -300,7 +298,6 @@ Return JSON:
             println("    clickMenuItem failed: ${menuErr.message} — falling back to dialog button")
             return try {
                 executor.clickDialogButton(target)
-                Thread.sleep(500)
                 ActionResult(true, "Clicked button '$target'")
             } catch (btnErr: Exception) {
                 ActionResult(false, "Could not click '$target' as menu item or button: ${btnErr.message}")
@@ -314,7 +311,6 @@ Return JSON:
     ): ActionResult {
         return try {
             executor.clickDialogButton(target)
-            Thread.sleep(500)
             ActionResult(true, "Clicked button '$target'")
         } catch (btnErr: Exception) {
             println("    clickDialogButton failed: ${btnErr.message} — falling back to menu item")
@@ -333,8 +329,10 @@ Return JSON:
         val preClickUiTree = uiTreeProvider()
         val preClickPopupCount = ScopedSnapshotBuilder.popupCount(preClickUiTree)
 
+        // clickMenuItem already blocks (tree-only) until the transient window
+        // count changes, so no fixed settle is needed here; waitForUIElement
+        // then confirms which kind of element appeared.
         executor.clickMenuItem(target)
-        Thread.sleep(800)
         waitForUIElement(timeoutMs = 2000)
 
         val postClickUiTree = uiTreeProvider()
@@ -461,7 +459,6 @@ Return JSON:
             }
 
             executor.typeInDialog(action.text, clearFirst = action.clearFirst)
-            Thread.sleep(action.text.length * 20L)
             ActionResult(
                 true,
                 "Typed '${action.text}' in '${action.target ?: "current field"}' (clearFirst=${action.clearFirst})",
@@ -484,7 +481,6 @@ Return JSON:
                 // Special case: open context menu
                 key == "context_menu" -> {
                     executor.openContextMenu()
-                    Thread.sleep(500) // Wait for menu to appear
                     ActionResult(true, "Opened context menu")
                 }
                 // Shortcut (contains +)
@@ -649,7 +645,6 @@ Return JSON:
     private fun executeClickButton(action: AgentAction.ClickButton): ActionResult {
         return try {
             executor.clickDialogButton(action.target)
-            Thread.sleep(400)
             ActionResult(true, "Clicked button '${action.target}'")
         } catch (e: Exception) {
             ActionResult(false, "Failed to click button '${action.target}': ${e.message}")
@@ -660,7 +655,6 @@ Return JSON:
     private fun executeOpenContextMenu(): ActionResult {
         return try {
             executor.openContextMenu()
-            Thread.sleep(300)
             ActionResult(true, "Opened context menu")
         } catch (e: Exception) {
             ActionResult(false, "Failed to open context menu: ${e.message}")
@@ -726,6 +720,29 @@ Return JSON:
             ActionResult(true, "Set checkbox '${action.target}' to ${action.checked}")
         } catch (e: Exception) {
             ActionResult(false, "Failed to set checkbox '${action.target}': ${e.message}")
+        }
+    }
+
+    /**
+     * Select a table row (when given) and click a row-action button inside
+     * the active dialog — the only way to add/remove parameters in table-
+     * driven dialogs like Change Signature.
+     */
+    private fun executeTableRowAction(action: AgentAction.TableRowAction): ActionResult {
+        return try {
+            val clicked = executor.tableRowAction(action.action, action.rowIndex)
+            val rowDesc = action.rowIndex?.let { " on row $it" } ?: ""
+            if (clicked) {
+                ActionResult(true, "Table action '${action.action}'$rowDesc executed")
+            } else {
+                ActionResult(
+                    false,
+                    "Table action button '${action.action}' not found in the active dialog" +
+                        " — check the exact button label/tooltip in the Active Window.",
+                )
+            }
+        } catch (e: Exception) {
+            ActionResult(false, "Failed table action '${action.action}': ${e.message}")
         }
     }
 
@@ -859,7 +876,7 @@ Return JSON:
                 "source_contains" ->
                     arg.isNotBlank() && visibleSource.contains(arg)
                 "source_absent" ->
-                    arg.isNotBlank() && !visibleSource.contains(arg)
+                    arg.isNotBlank() && !containsIdentifierToken(visibleSource, arg)
                 "line_contains" -> {
                     // Form: line_contains:<line>:<text>
                     val parts = arg.split(":", limit = 2)
@@ -888,7 +905,7 @@ Return JSON:
                 "file_contains" ->
                     arg.isNotBlank() && fullDocumentText?.contains(arg) == true
                 "file_absent" ->
-                    arg.isNotBlank() && fullDocumentText?.let { !it.contains(arg) } == true
+                    arg.isNotBlank() && fullDocumentText?.let { !containsIdentifierToken(it, arg) } == true
 
                 else -> labels.any { it.label.contains(p, ignoreCase = true) }
             }
@@ -917,6 +934,26 @@ Return JSON:
             else ->
                 ActionResult(false, "Predicate failed: '${action.predicate}'")
         }
+    }
+
+    /**
+     * Identifier-token-aware `contains`, used by the `*_absent` predicates.
+     *
+     * Plain substring matching made `source_absent:compute` fail forever
+     * after renaming `compute` → `computeTotal` — the old name "survives" as
+     * a prefix of the new one, so the LLM kept believing the rename hadn't
+     * landed. We require the match to not be embedded in a longer identifier
+     * — but ONLY at edges that are themselves identifier characters, so
+     * fragments like `private int foo(` still match naturally.
+     */
+    private fun containsIdentifierToken(
+        text: String,
+        needle: String,
+    ): Boolean {
+        if (needle.isEmpty()) return false
+        val prefix = if (needle.first().isJavaIdentifierPart()) "(?<![A-Za-z0-9_$])" else ""
+        val suffix = if (needle.last().isJavaIdentifierPart()) "(?![A-Za-z0-9_$])" else ""
+        return Regex(prefix + Regex.escape(needle) + suffix).containsMatchIn(text)
     }
 
     /**

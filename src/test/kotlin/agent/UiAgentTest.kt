@@ -32,7 +32,7 @@ class UiAgentTest : BaseTest() {
     fun setup() {
         llm =
             LlmModel.create(
-                apiKey = "",
+                apiKey = "sk-sp-494544412a3b4e4c8aa38d6555a4cdac",
                 baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1",
                 model = "MiniMax-M2.5",
             )

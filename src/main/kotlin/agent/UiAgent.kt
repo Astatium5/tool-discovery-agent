@@ -4,7 +4,7 @@ import dev.langchain4j.model.chat.ChatModel
 import execution.ActionGenerator
 import execution.UiExecutor
 import llm.LLMReasoner
-import llm.LLMReasoner.Decision
+import llm.LLMReasoner.DecisionV2
 import llm.LLMReasoner.DecisionContext
 import llm.LLMReasoner.HistoryEntry
 import llm.LLMReasoner.MatchedRecipe
@@ -71,7 +71,7 @@ class UiAgent(
         val iteration: Int = 0,
         val actionHistory: MutableList<HistoryEntry> = mutableListOf(),
         val uiStateHistory: MutableList<String> = mutableListOf(),
-        val lastDecision: Decision? = null,
+        val lastDecision: DecisionV2? = null,
         val failed: Boolean = false,
         val complete: Boolean = false,
         val matchedRecipe: MatchedRecipe? = null,
@@ -422,22 +422,34 @@ class UiAgent(
     private fun checkDiffBasedCompletion(state: ExecutionState): Boolean {
         val initialText = state.initialDocumentText ?: return false
 
-        // Get current document text
-        val currentText = executor.getDocumentText() ?: return false
-
-        // Check if document changed
-        if (currentText == initialText) {
+        // TREE FIRST, DOCUMENT SECOND. `getDocumentText` is a `callJs` that
+        // dispatches onto the EDT via `invokeAndWait`; firing it while a
+        // modal dialog is on top (e.g. right after the click that opened
+        // Change Signature) is the exact macOS nested-event-loop wedge that
+        // poisons Remote Robot's dispatch queue. A visible dialog also means
+        // the task is mid-flight, so completion is trivially false anyway.
+        val uiTree = uiTreeProvider.invoke()
+        if (ScopedSnapshotBuilder.containsDialog(uiTree, profile)) {
             return false
         }
 
-        // Check if any popups/dialogs are open
-        val uiTree = uiTreeProvider.invoke()
+        // Blocking popups (menus, choosers, inline templates) also mean
+        // "not done". Notification balloons/toasts do NOT count — the
+        // post-rename "N usages renamed" balloon used to block this check
+        // even though the refactor had fully landed.
         val allComponents = UiTreeParser.flatten(uiTree)
-        val hasPopup = allComponents.any { profile.isPopupWindow(it.cls) }
-        val hasDialog = allComponents.any { profile.isDialog(it.cls) }
+        val hasBlockingPopup =
+            allComponents.any {
+                (profile.isPopupWindow(it.cls) || profile.isDialog(it.cls)) &&
+                    !ScopedSnapshotBuilder.isNotificationWindow(it)
+            }
+        if (hasBlockingPopup) {
+            return false
+        }
 
-        // Complete if document changed and no popups/dialogs
-        return !hasPopup && !hasDialog
+        // Safe to read the document now: no dialog, no popup.
+        val currentText = executor.getDocumentText() ?: return false
+        return currentText != initialText
     }
 
     /**

@@ -40,7 +40,7 @@ class LLMReasoner(
     /**
      * A decision made by the LLM.
      */
-    data class Decision(
+    data class DecisionV2(
         val reasoning: String,
         val action: AgentAction,
         val expectedResult: String,
@@ -239,6 +239,11 @@ do NOT put it in the JSON.
 - **Type** — `{"type": "type", "text": <string: what to type>, "clearFirst": <bool>, "target": <string|null: field label>}`
 - **SelectDropdown** — `{"type": "select_dropdown", "target": <string: dropdown label>, "value": <string: option label>}`
 - **SetCheckbox** — `{"type": "set_checkbox", "target": <string: checkbox label>, "checked": <bool>}`
+- **TableRowAction** — `{"type": "table_row_action", "target": <string: row-action button label, e.g. "Add"/"Remove">, "row": <int|null: 0-based row to select first>}`
+  Use this on dialogs that contain a parameter/entry TABLE (e.g. Change
+  Signature). It selects the row (when given) and clicks the table's
+  row-action button. After "Add", a new editable row gains focus — use
+  Type to fill it and PressKey("Tab") to move between its cells.
 - **Scroll** — `{"type": "scroll", "direction": <"up"|"down"|"page_up"|"page_down"|"home"|"end">, "target": <string: list/tree label or "">, "amount": <int>}`
 - **PressKey** — `{"type": "press_key", "key": <string: single key name, e.g. "Enter"/"Escape"/"Tab"/"ArrowDown">}`
   Use for **single keys only** — Enter to commit a dialog/template, Escape to cancel, Tab/Arrow to navigate list items. **Do NOT use for keyboard shortcuts** like `"Shift+F6"` or `"Ctrl+R"`; use the context menu instead.
@@ -296,7 +301,11 @@ items — click the one you want by its exact label.
   A "Change Signature" DIALOG opens. Operate on it:
     - change visibility → `SelectDropdown("Visibility", "<Private|Package-private|Protected|Public>")`
       (exact label shown in the dialog's visibility combobox).
-    - add param → use the dialog's buttons / table as shown in Active Window.
+    - add param → `TableRowAction("Add")` (the parameters table's add
+      button); a new editable row gains focus. `Type(<param_name>,
+      clearFirst=true)` for the name, `PressKey("Tab")` to move to the
+      type/default-value cells and Type into each. Repeat per parameter.
+    - remove param → `TableRowAction("Remove", row=<index>)`.
   →  `ClickButton("Refactor")` to commit (if the dialog is still open —
      a `SelectDropdown` may auto-commit on some IntelliJ versions and
      the dialog closes on its own). Once Active Context returns to
@@ -439,7 +448,7 @@ Return JSON (only JSON, no other text):
      * @param context The decision context with intent, observation, and history
      * @return The LLM's decision
      */
-    fun decide(context: DecisionContext): Decision {
+    fun decide(context: DecisionContext): DecisionV2 {
         val prompt = buildPrompt(context)
         val systemPrompt = "You are an expert developer using IntelliJ IDEA."
 
@@ -468,7 +477,7 @@ Return JSON (only JSON, no other text):
             parseDecision(rawText)
         } catch (e: Exception) {
             println("  LLMReasoner: LLM call failed, returning Observe action: ${e.message}")
-            Decision(
+            DecisionV2(
                 reasoning = "LLM call failed, observing current state",
                 action = AgentAction.Observe,
                 expectedResult = "Get fresh UI state",
@@ -699,6 +708,9 @@ Use the available primitive actions and observe the UI after each action."""
             is AgentAction.FocusEditor -> "Focus editor"
             is AgentAction.CancelDialog -> "Cancel dialog (Escape)"
             is AgentAction.SetCheckbox -> "Set checkbox '${action.target}' = ${action.checked}"
+            is AgentAction.TableRowAction ->
+                "Table action '${action.action}'" +
+                    (action.rowIndex?.let { " on row $it" } ?: "")
             is AgentAction.Scroll ->
                 "Scroll ${action.direction}" +
                     (if (action.target.isNotBlank()) " on '${action.target}'" else "") +
@@ -758,6 +770,8 @@ Use the available primitive actions and observe the UI after each action."""
         val direction: String? = null,
         val amount: Int? = null,
         val predicate: String? = null,
+        /** 0-based table row for table_row_action. */
+        val row: Int? = null,
     ) {
         /**
          * Convert DTO to domain AgentAction.
@@ -817,6 +831,11 @@ Use the available primitive actions and observe the UI after each action."""
                     AgentAction.SetCheckbox(
                         target = target ?: "",
                         checked = checked ?: true,
+                    )
+                "table_row_action" ->
+                    AgentAction.TableRowAction(
+                        action = target ?: value ?: "",
+                        rowIndex = row,
                     )
                 "scroll" ->
                     AgentAction.Scroll(
@@ -899,7 +918,7 @@ Use the available primitive actions and observe the UI after each action."""
      *
      * We handle all of these before handing the text to kotlinx.serialization.
      */
-    private fun parseDecision(response: String): Decision {
+    private fun parseDecision(response: String): DecisionV2 {
         return try {
             val jsonText = extractJsonFromResponse(response)
 
@@ -909,7 +928,7 @@ Use the available primitive actions and observe the UI after each action."""
             val normalized = normalizeDecisionJson(raw)
             val dto = jsonParser.decodeFromJsonElement<LLMDecisionDto>(normalized)
 
-            Decision(
+            DecisionV2(
                 reasoning = dto.reasoning.ifBlank { "No reasoning provided" },
                 action = dto.action?.toAction() ?: AgentAction.Observe,
                 expectedResult = dto.expectedResult,
@@ -921,7 +940,7 @@ Use the available primitive actions and observe the UI after each action."""
             println("  LLMReasoner: Failed to parse LLM response: ${e.message}")
             println("  Response preview: ${response.take(500)}")
 
-            Decision(
+            DecisionV2(
                 reasoning = "Failed to parse LLM response: ${e.message}",
                 action = AgentAction.Observe,
                 expectedResult = "Get fresh UI state",

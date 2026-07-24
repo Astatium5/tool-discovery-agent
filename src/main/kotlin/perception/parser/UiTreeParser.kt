@@ -58,66 +58,6 @@ object UiTreeParser {
 
     private fun isEditorClass(cls: String): Boolean = profile?.isEditor(cls) ?: (cls in DEFAULT_EDITOR_CLASSES)
 
-    private fun isPopupOrDialog(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            p.isPopupWindow(cls) || p.isDialog(cls)
-        } else {
-            cls in setOf("HeavyWeightWindow", "DialogRootPane")
-        }
-    }
-
-    private fun isPopupWindow(cls: String): Boolean = profile?.isPopupWindow(cls) ?: (cls == "HeavyWeightWindow")
-
-    private fun isToolbarButton(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            p.roleOf(cls) == ComponentRole.BUTTON || p.roleOf(cls) == ComponentRole.TOOLBAR
-        } else {
-            cls in setOf("ActionButton", "ActionButtonWithText", "ToolbarComboButton", "CWMNewUIButton")
-        }
-    }
-
-    private fun isSidePanel(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            p.roleOf(cls) == ComponentRole.BUTTON
-        } else {
-            cls == "SquareStripeButton"
-        }
-    }
-
-    private fun isStatusBar(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            p.roleOf(cls) == ComponentRole.STATUS_BAR || p.roleOf(cls) == ComponentRole.LABEL
-        } else {
-            cls in setOf("TextPanel", "IdeStatusBarImpl")
-        }
-    }
-
-    private fun isTab(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            p.roleOf(cls) == ComponentRole.TAB
-        } else {
-            cls == "EditorTabLabel"
-        }
-    }
-
-    private fun isDialogInteractive(cls: String): Boolean {
-        val p = profile
-        return if (p != null) {
-            ComponentRole.isDialogInteractive(p.roleOf(cls))
-        } else {
-            cls in
-                setOf(
-                    "ActionMenuItem", "ActionMenu", "JButton",
-                    "EditorComponentImpl", "JCheckBox", "ComboBox",
-                )
-        }
-    }
-
     // ── Parsing ─────────────────────────────────────────────────────────────
 
     fun parse(html: String): List<UiComponent> {
@@ -208,67 +148,6 @@ object UiTreeParser {
             focused = focused,
         )
     }
-
-    // ── Snapshot (high-level summary) ───────────────────────────────────────
-
-    fun toSnapshot(roots: List<UiComponent>): UiSnapshot {
-        val all = flatten(roots)
-
-        return UiSnapshot(
-            popups =
-                all
-                    .filter { isPopupOrDialog(it.cls) }
-                    .map { summarizePopup(it) }
-                    .filter { it.items.isNotEmpty() },
-            editors =
-                all
-                    .filter { isEditorClass(it.cls) }
-                    .map {
-                        EditorState(
-                            file = it.accessibleName.removePrefix("Editor for").trim(),
-                            focused = it.accessibleName.contains("focused", ignoreCase = true),
-                        )
-                    },
-            toolbar =
-                all
-                    .filter { isToolbarButton(it.cls) }
-                    .filter { it.enabled && it.label.isNotBlank() && it.label != it.cls }
-                    .map { toClickable(it) }
-                    .distinctBy { it.label },
-            panels =
-                all
-                    .filter { isSidePanel(it.cls) }
-                    .filter { it.label.isNotBlank() && it.label != it.cls }
-                    .map { toClickable(it) }
-                    .distinctBy { it.label },
-            statusBar =
-                all
-                    .filter { isStatusBar(it.cls) }
-                    .mapNotNull { it.accessibleName.ifBlank { it.text }.ifBlank { null } }
-                    .distinct(),
-            tabs =
-                all
-                    .filter { isTab(it.cls) }
-                    .map { it.label }.filter { it.isNotBlank() }.distinct(),
-        )
-    }
-
-    private fun summarizePopup(popup: UiComponent): PopupSummary {
-        val items =
-            flatten(listOf(popup))
-                .filter { isDialogInteractive(it.cls) }
-                .map { toClickable(it) }
-        return PopupSummary(popup.cls, items)
-    }
-
-    private fun toClickable(c: UiComponent) =
-        ClickableComponent(
-            label = c.label,
-            cls = c.cls,
-            hasSubmenu = c.hasSubmenu,
-            enabled = c.enabled,
-            xpath = c.xpath,
-        )
 
     fun flatten(nodes: List<UiComponent>): List<UiComponent> = nodes.flatMap { listOf(it) + flatten(it.children) }
 }

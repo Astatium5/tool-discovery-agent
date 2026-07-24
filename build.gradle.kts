@@ -20,10 +20,10 @@ repositories {
     maven("https://packages.jetbrains.team/maven/p/ij/intellij-dependencies")
 }
 
-// Use Java 25 toolchain, targeting 17 for IntelliJ Platform compatibility
+// Use Java 26 toolchain, targeting 17 for IntelliJ Platform compatibility
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(26)
     }
 }
 

@@ -3,8 +3,7 @@ package profile
 import dev.langchain4j.data.message.SystemMessage
 import dev.langchain4j.data.message.UserMessage
 import dev.langchain4j.model.chat.ChatModel
-import execution.UiExecutor
-import llm.PromptLogger
+import execution.InProcessGuiExecutor
 import perception.parser.UiTreeProvider
 
 /**
@@ -29,8 +28,7 @@ class UIProfiler(
     private val treeProvider: UiTreeProvider,
     private val llm: ChatModel,
     private val profilePath: String = "build/reports/app-profile.json",
-    private val executor: UiExecutor? = null,
-    private val promptLogger: PromptLogger? = null,
+    private val executor: InProcessGuiExecutor? = null,
 ) {
     companion object {
         private const val MAX_CLASSES_PER_BATCH = 60
@@ -234,12 +232,12 @@ Return JSON array only, no markdown fences:
             mergeContexts(allNewContexts, menuContexts)
             println("      Context menu snapshot: ${menuContexts.size} classes")
 
-            exec.dismissPopups()
+            exec.closeAllDialogs()
             Thread.sleep(300)
         } catch (e: Exception) {
             println("      Context menu probe failed: ${e.message}")
             try {
-                exec.dismissPopups()
+                exec.closeAllDialogs()
             } catch (_: Exception) {
             }
         }
@@ -254,12 +252,12 @@ Return JSON array only, no markdown fences:
             mergeContexts(allNewContexts, dialogContexts)
             println("      Dialog snapshot: ${dialogContexts.size} classes")
 
-            exec.pressEscape()
+            exec.pressKey("Escape")
             Thread.sleep(300)
         } catch (e: Exception) {
             println("      Dialog probe failed: ${e.message}")
             try {
-                exec.dismissPopups()
+                exec.closeAllDialogs()
             } catch (_: Exception) {
             }
         }
@@ -334,18 +332,6 @@ Return JSON array only, no markdown fences:
                 )
             val durationMs = System.currentTimeMillis() - started
             val rawText = response.aiMessage().text()
-            promptLogger?.log(
-                context =
-                    PromptLogger.LogContext(
-                        caller = "UIProfiler.inferMissingClasses",
-                        extra = mapOf("toolkit" to toolkitHint),
-                    ),
-                model = llm::class.simpleName ?: "unknown",
-                messages = PromptLogger.messages(SYSTEM_PROMPT, prompt),
-                rawResponse = rawText,
-                parsedResponse = rawText,
-                durationMs = durationMs,
-            )
             val parsed = parseClassifications(rawText)
             println("      Inferred: ${parsed.entries.joinToString(", ") { "${it.key} -> ${it.value}" }}")
             parsed
@@ -406,18 +392,6 @@ Return JSON array only, no markdown fences:
                 )
             val durationMs = System.currentTimeMillis() - started
             val rawText = response.aiMessage().text()
-            promptLogger?.log(
-                context =
-                    PromptLogger.LogContext(
-                        caller = "UIProfiler.classifyBatch",
-                        extra = mapOf("batchSize" to batch.size.toString()),
-                    ),
-                model = llm::class.simpleName ?: "unknown",
-                messages = PromptLogger.messages(SYSTEM_PROMPT, prompt),
-                rawResponse = rawText,
-                parsedResponse = rawText,
-                durationMs = durationMs,
-            )
             parseClassifications(rawText)
         } catch (e: Exception) {
             println("  UIProfiler: LLM classification failed: ${e.message}")

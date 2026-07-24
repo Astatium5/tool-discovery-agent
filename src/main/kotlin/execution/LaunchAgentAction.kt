@@ -5,7 +5,6 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.ui.Messages
-import com.intellij.remoterobot.RemoteRobot
 import llm.LlmModel
 import perception.parser.HtmlUiTreeProvider
 import profile.ApplicationProfile
@@ -45,9 +44,9 @@ class LaunchAgentAction : AnAction() {
 //            ?: System.getenv("LLM_MODEL")
 //            ?: "MiniMax-M2.5"
 
-        val apiKey = "sk-sp-494544412a3b4e4c8aa38d6555a4cdac"
-        val baseUrl = "https://coding-intl.dashscope.aliyuncs.com/v1"
-        val model = "MiniMax-M2.5"
+        val apiKey = "lm-studio"
+        val baseUrl = "http://127.0.0.1:1234/v1"
+        val model = "lfm2.5-8b-a1b-mlx"
 
         if (apiKey.isNullOrBlank()) {
             Messages.showErrorDialog(
@@ -68,19 +67,7 @@ class LaunchAgentAction : AnAction() {
 
         if (intent.isBlank()) return
 
-        // Connect to RemoteRobot
         val robotPort = 8082
-        val robot =
-            try {
-                RemoteRobot("http://127.0.0.1:$robotPort")
-            } catch (ex: Exception) {
-                Messages.showErrorDialog(
-                    "Cannot connect to Robot Server on port $robotPort.\n" +
-                        "Start the IDE with: ./gradlew runIdeForUiTests",
-                    "Tool Discovery Agent",
-                )
-                return
-            }
 
         // Build components
         val llm = LlmModel.create(apiKey = apiKey, baseUrl = baseUrl, model = model)
@@ -89,7 +76,7 @@ class LaunchAgentAction : AnAction() {
         val profile =
             ApplicationProfile.loadFromFile("$basePath/build/reports/app-profile.json")
                 ?: ApplicationProfile(appName = "IntelliJ IDEA")
-        val executor = UiExecutor(robot, treeProvider)
+        val executor = InProcessGuiExecutor(project)
 
         val agent =
             UiAgent(

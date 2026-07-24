@@ -2,16 +2,14 @@ package agent
 
 import dev.langchain4j.model.chat.ChatModel
 import execution.ActionGenerator
-import execution.UiExecutor
+import execution.InProcessGuiExecutor
 import llm.LLMReasoner
 import llm.LLMReasoner.Decision
 import llm.LLMReasoner.DecisionContext
 import llm.LLMReasoner.HistoryEntry
 import llm.LLMReasoner.MatchedRecipe
-import llm.PromptLogger
 import model.AgentAction
 import perception.UiDelta
-import perception.UiTreeFormatter
 import perception.parser.ScopedSnapshotBuilder
 import perception.parser.UiComponent
 import perception.parser.UiTreeParser
@@ -33,23 +31,16 @@ import recipe.VerifiedRecipe
  * - UI state is observed, not assumed
  * - Recipes are references, not blind scripts
  * - Successful executions are saved as verified recipes
- *
- * @param promptLogDir Root directory for [PromptLogger] output. One sub-directory per
- *                     [execute] call keeps sessions separate and easy to diff.
- *                     Set to `null` to disable prompt logging entirely.
  */
 class UiAgent(
     private val llm: ChatModel,
     private val profile: ApplicationProfile,
-    private val executor: UiExecutor,
+    private val executor: InProcessGuiExecutor,
     private val uiTreeProvider: () -> List<UiComponent>,
-    private val promptLogDir: String? = "sent_prompt",
 ) {
-    // Rebuilt for each [execute] call so every run gets its own session folder.
-    private var promptLogger: PromptLogger? = null
     private var reasoner: LLMReasoner = LLMReasoner(llm)
     private var actionGenerator: ActionGenerator =
-        ActionGenerator(executor, profile, uiTreeProvider, llm)
+        ActionGenerator(executor, profile, uiTreeProvider)
     private val recipeRegistry = RecipeRegistry()
 
     /**
@@ -120,12 +111,8 @@ class UiAgent(
         println("\n=== BRAIN AGENT ===")
         println("Intent: $intent")
 
-        // Start a new prompt-logging session per run so every LLM call for this
-        // intent lands under `sent_prompt/session_<ts>/NNN_<caller>.json`.
-        promptLogger = promptLogDir?.let { PromptLogger(baseDir = it) }
-        reasoner = LLMReasoner(llm, promptLogger)
-        actionGenerator = ActionGenerator(executor, profile, uiTreeProvider, llm, promptLogger)
-        promptLogger?.let { println("  Prompt log session: ${it.sessionDir.path}") }
+        reasoner = LLMReasoner(llm)
+        actionGenerator = ActionGenerator(executor, profile, uiTreeProvider)
 
         // Try to find a matching recipe
         val matchedRecipe = findMatchingRecipe(intent)
@@ -196,7 +183,7 @@ class UiAgent(
             val delta = UiDelta.between(state.previousSnapshot, snapshot)
             val fingerprintBefore = snapshot.fingerprint
 
-            val uiDescription = UiTreeFormatter.format(uiTree, profile)
+            val uiDescription = ScopedSnapshotBuilder.formatCompactSnapshot(snapshot)
             state.uiStateHistory.add(uiDescription)
 
             println(
@@ -323,9 +310,23 @@ class UiAgent(
                     decision.action
                 }
 
-            // Check for completion or failure
-            if (decision.taskComplete || effectiveAction is AgentAction.Complete) {
-                println("  Task marked as complete by LLM")
+            // Completion gate. Two paths can mark the task done:
+            //   1. The LLM emitted the pure `Complete` marker (no side effect) AND
+            //      the diff check below at line ~380 confirms the file actually
+            //      changed.
+            //   2. The LLM set `task_complete=true` and the action that came with
+            //      it succeeded AND the diff check confirms a real change.
+            //
+            // We deliberately do NOT honor `task_complete=true` before executing
+            // the current iteration's action: a small model can lie about
+            // completion while emitting a side-effecting action, and the agent
+            // must execute first so the diff check (or the action's own success
+            // signal) can verify. Skipping this gate is what previously caused
+            // the loop to break on `ClickMenuItem('Rename...')` while the file
+            // was still unrenamed — and a fake "verified" recipe to be saved.
+            val llmClaimedComplete = decision.taskComplete || effectiveAction is AgentAction.Complete
+            if (llmClaimedComplete && effectiveAction is AgentAction.Complete) {
+                println("  Task marked as complete by LLM (pure Complete marker)")
                 state = state.copy(complete = true, lastDecision = decision)
                 break
             }
@@ -337,7 +338,19 @@ class UiAgent(
             }
 
             // 3. ACT: execute with intent as goal for post-click analysis.
-            val actionResult = actionGenerator.execute(effectiveAction, uiTree, goal = intent)
+            val actionResult =
+                try {
+                    actionGenerator.execute(effectiveAction, uiTree, goal = intent)
+                } catch (e: IllegalArgumentException) {
+                    // Bad model input (e.g. empty symbol in MoveCaret). Treat as
+                    // a single-shot failure so the loop can recover on the next
+                    // iteration rather than killing the whole agent run.
+                    println("  Action rejected: ${e.message}")
+                    ActionGenerator.ActionResult(
+                        success = false,
+                        message = "Action rejected by executor: ${e.message}",
+                    )
+                }
             println("  Action Result: ${actionResult.message}")
 
             // Observe again so history carries a meaningful post-fingerprint.

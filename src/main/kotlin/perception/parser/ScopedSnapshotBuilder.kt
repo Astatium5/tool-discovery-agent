@@ -143,11 +143,6 @@ object ScopedSnapshotBuilder {
         return profileSays || looksLikeDialogByName(cls)
     }
 
-    private fun isPopupOrDialog(
-        cls: String,
-        p: ApplicationProfile? = profile,
-    ): Boolean = isPopupWindow(cls, p) || isDialog(cls, p)
-
     /**
      * Lightweight tree-only probe: is any visible dialog present anywhere
      * in this raw UI tree?
@@ -180,17 +175,6 @@ object ScopedSnapshotBuilder {
     ): Boolean {
         val profileSays = p?.let { ComponentRole.isMenu(it.roleOf(cls)) } ?: false
         return profileSays || looksLikeMenuItemByName(cls)
-    }
-
-    private fun isDialogInteractive(
-        cls: String,
-        p: ApplicationProfile? = profile,
-    ): Boolean {
-        return if (p != null) {
-            ComponentRole.isDialogInteractive(p.roleOf(cls))
-        } else {
-            cls in DEFAULT_DIALOG_COMPONENT_CLASSES
-        }
     }
 
     private fun isEditor(
@@ -385,28 +369,6 @@ object ScopedSnapshotBuilder {
 
     // ── Popup / menu queries ────────────────────────────────────────────────
 
-    fun forActivePopupStructured(roots: List<UiComponent>): List<MenuItemInfo> {
-        val all = UiTreeParser.flatten(roots)
-        val popups = all.filter { isPopupWindow(it.cls) }
-        if (popups.isEmpty()) return emptyList()
-
-        val topmost = popups.last()
-        return extractMenuItems(listOf(topmost))
-    }
-
-    fun forActivePopupStructured(
-        roots: List<UiComponent>,
-        p: ApplicationProfile,
-    ): List<MenuItemInfo> {
-        profile = p
-        return forActivePopupStructured(roots)
-    }
-
-    fun hasMultiplePopups(roots: List<UiComponent>): Boolean {
-        val all = UiTreeParser.flatten(roots)
-        return all.count { isPopupWindow(it.cls) } >= 2
-    }
-
     fun popupCount(roots: List<UiComponent>): Int {
         val all = UiTreeParser.flatten(roots)
         return all.count { isPopupWindow(it.cls) }
@@ -463,151 +425,6 @@ object ScopedSnapshotBuilder {
     ): Triple<Boolean, Boolean, Boolean> {
         profile = p
         return detectResponseType(roots)
-    }
-
-    // ── Text representations for LLM prompts ────────────────────────────────
-
-    fun forActivePopup(roots: List<UiComponent>): String {
-        val all = UiTreeParser.flatten(roots)
-        val popups = all.filter { isPopupWindow(it.cls) }
-        if (popups.isEmpty()) return "NO POPUP OPEN"
-
-        val topmost = popups.last()
-        val items =
-            UiTreeParser.flatten(listOf(topmost))
-                .filter { isMenuItem(it.cls) }
-                .filter { it.label.isNotBlank() && it.label != it.cls }
-
-        return buildString {
-            appendLine("POPUP MENU ITEMS:")
-            items.forEach { item ->
-                val arrow = if (item.hasSubmenu) " ->" else ""
-                val dis = if (!item.enabled) " (disabled)" else ""
-                appendLine("  - \"${item.label}\"$arrow$dis")
-            }
-            appendLine("\nTotal: ${items.size} items")
-        }
-    }
-
-    fun forActivePopup(
-        roots: List<UiComponent>,
-        p: ApplicationProfile,
-    ): String {
-        profile = p
-        return forActivePopup(roots)
-    }
-
-    fun forActiveDialog(roots: List<UiComponent>): String {
-        val all = UiTreeParser.flatten(roots)
-
-        val dialog =
-            all.lastOrNull { isDialog(it.cls) }
-                ?: all.lastOrNull { isPopupWindow(it.cls) }
-                ?: return "NO DIALOG OPEN"
-
-        val components =
-            UiTreeParser.flatten(listOf(dialog))
-                .filter { isDialogInteractive(it.cls) }
-                .filter { it.label.isNotBlank() && it.label != it.cls }
-
-        val fields = components.filter { isTextField(it.cls) }
-        val buttons = components.filter { isButton(it.cls) }
-        val menuItems = components.filter { isMenuItem(it.cls) }
-
-        return buildString {
-            appendLine("DIALOG STATE:")
-
-            if (fields.isNotEmpty()) {
-                appendLine("\n  FIELDS:")
-                fields.forEach { f ->
-                    val role = profile?.roleOf(f.cls)?.name ?: f.cls
-                    appendLine("    - [$role] \"${f.label}\"${if (!f.enabled) " (disabled)" else ""}")
-                }
-            }
-
-            if (buttons.isNotEmpty()) {
-                appendLine("\n  BUTTONS:")
-                buttons.forEach { b ->
-                    appendLine("    - \"${b.label}\"${if (!b.enabled) " (disabled)" else ""}")
-                }
-            }
-
-            if (menuItems.isNotEmpty()) {
-                appendLine("\n  MENU ITEMS:")
-                menuItems.forEach { m ->
-                    val arrow = if (m.hasSubmenu) " ->" else ""
-                    appendLine("    - \"${m.label}\"$arrow${if (!m.enabled) " (disabled)" else ""}")
-                }
-            }
-        }
-    }
-
-    fun forActiveDialog(
-        roots: List<UiComponent>,
-        p: ApplicationProfile,
-    ): String {
-        profile = p
-        return forActiveDialog(roots)
-    }
-
-    fun forEditorState(roots: List<UiComponent>): String {
-        val all = UiTreeParser.flatten(roots)
-
-        val editors =
-            all
-                .filter { isEditor(it.cls) }
-                .map {
-                    EditorState(
-                        file = it.accessibleName.removePrefix("Editor for").trim(),
-                        focused = it.accessibleName.contains("focused", ignoreCase = true),
-                    )
-                }
-
-        val tabs =
-            all
-                .filter { isTab(it.cls) }
-                .map { it.label }
-                .filter { it.isNotBlank() }
-                .distinct()
-
-        val hasPopup = all.any { isPopupOrDialog(it.cls) }
-
-        return buildString {
-            appendLine("EDITOR STATE:")
-            if (hasPopup) appendLine("  WARNING: A popup/dialog is currently open")
-            if (editors.isNotEmpty()) {
-                editors.forEach { e ->
-                    appendLine("  - ${e.file}${if (e.focused) " (focused)" else ""}")
-                }
-            } else {
-                appendLine("  No editors open")
-            }
-            if (tabs.isNotEmpty()) {
-                appendLine("  TABS: ${tabs.joinToString(", ")}")
-            }
-        }
-    }
-
-    fun forEditorState(
-        roots: List<UiComponent>,
-        p: ApplicationProfile,
-    ): String {
-        profile = p
-        return forEditorState(roots)
-    }
-
-    fun forInlineEditorState(roots: List<UiComponent>): String {
-        val popupView = forActivePopup(roots)
-        val editorView = forEditorState(roots)
-        return "$popupView\n\n$editorView"
-    }
-
-    fun forInlineEditorState(
-        roots: List<UiComponent>,
-        p: ApplicationProfile,
-    ): String {
-        profile = p
-        return forInlineEditorState(roots)
     }
 
     // ── Compact snapshot (token-efficient, delta-friendly) ──────────────────
@@ -861,12 +678,13 @@ object ScopedSnapshotBuilder {
                 fields += InteractiveItem("tab", t, true, null)
             }
             if (ev.breadcrumb.isNotEmpty()) {
-                fields += InteractiveItem(
-                    "breadcrumb",
-                    ev.breadcrumb.joinToString(" / "),
-                    true,
-                    null,
-                )
+                fields +=
+                    InteractiveItem(
+                        "breadcrumb",
+                        ev.breadcrumb.joinToString(" / "),
+                        true,
+                        null,
+                    )
             }
         }
 
@@ -1278,17 +1096,5 @@ object ScopedSnapshotBuilder {
             java.security.MessageDigest.getInstance("SHA-1")
                 .digest(parts.joinToString("\n").toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(16)
-    }
-
-    // ── Utility ─────────────────────────────────────────────────────────────
-
-    fun findByLabel(
-        roots: List<UiComponent>,
-        label: String,
-    ): ClickableComponent? {
-        return UiTreeParser.flatten(roots)
-            .filter { it.label.isNotBlank() }
-            .firstOrNull { it.label.equals(label, ignoreCase = true) || it.label.contains(label, ignoreCase = true) }
-            ?.let { ClickableComponent(it.label, it.cls, it.hasSubmenu, it.enabled, it.xpath) }
     }
 }

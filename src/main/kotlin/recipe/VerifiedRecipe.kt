@@ -60,7 +60,6 @@ data class VerifiedRecipe(
     ) {
         fun toAction(): AgentAction {
             return when (type.lowercase()) {
-                // Navigation actions
                 "open_file" -> AgentAction.OpenFile(params["path"] ?: "")
                 "move_caret" -> AgentAction.MoveCaret(params["symbol"] ?: "")
                 "select_lines" ->
@@ -68,7 +67,6 @@ data class VerifiedRecipe(
                         start = params["start"]?.toIntOrNull() ?: 1,
                         end = params["end"]?.toIntOrNull() ?: 1,
                     )
-                // UI interaction actions
                 "click" -> AgentAction.Click(params["target"] ?: "")
                 "click_menu_item" -> AgentAction.ClickMenuItem(params["target"] ?: "")
                 "click_button" -> AgentAction.ClickButton(params["target"] ?: "")
@@ -81,35 +79,11 @@ data class VerifiedRecipe(
                         target = params["target"],
                     )
                 "press_key" -> AgentAction.PressKey(params["key"] ?: "Enter")
-                "select_dropdown" ->
-                    AgentAction.SelectDropdown(
-                        target = params["target"] ?: "",
-                        value = params["value"] ?: "",
-                    )
-                "wait" ->
-                    AgentAction.Wait(
-                        elementType = params["elementType"] ?: "dialog",
-                        timeoutMs = params["timeoutMs"]?.toLongOrNull() ?: 5000,
-                    )
                 "focus_editor" -> AgentAction.FocusEditor
                 "cancel_dialog" -> AgentAction.CancelDialog
-                "set_checkbox" ->
-                    AgentAction.SetCheckbox(
-                        target = params["target"] ?: "",
-                        checked = params["checked"]?.toBoolean() ?: true,
-                    )
-                "scroll" ->
-                    AgentAction.Scroll(
-                        direction = params["direction"] ?: "down",
-                        target = params["target"] ?: "",
-                        amount = params["amount"]?.toIntOrNull() ?: 1,
-                    )
-                "verify" -> AgentAction.Verify(params["predicate"] ?: "")
                 "observe" -> AgentAction.Observe
                 "complete" -> AgentAction.Complete
                 "fail" -> AgentAction.Fail
-                // Unknown action types must not silently degrade to Observe:
-                // that hides bugs during recipe deserialization.
                 else -> throw IllegalArgumentException("Unknown recipe action type: '$type' (params=$params)")
             }
         }
@@ -144,43 +118,8 @@ data class VerifiedRecipe(
                             ),
                         )
                     is AgentAction.PressKey -> ActionJson("press_key", mapOf("key" to action.key))
-                    is AgentAction.SelectDropdown ->
-                        ActionJson(
-                            "select_dropdown",
-                            mapOf(
-                                "target" to action.target,
-                                "value" to action.value,
-                            ),
-                        )
-                    is AgentAction.Wait ->
-                        ActionJson(
-                            "wait",
-                            mapOf(
-                                "elementType" to action.elementType,
-                                "timeoutMs" to action.timeoutMs.toString(),
-                            ),
-                        )
-                    is AgentAction.UseRecipe -> ActionJson("use_recipe", mapOf("recipeId" to action.recipeId))
                     is AgentAction.FocusEditor -> ActionJson("focus_editor")
                     is AgentAction.CancelDialog -> ActionJson("cancel_dialog")
-                    is AgentAction.SetCheckbox ->
-                        ActionJson(
-                            "set_checkbox",
-                            mapOf(
-                                "target" to action.target,
-                                "checked" to action.checked.toString(),
-                            ),
-                        )
-                    is AgentAction.Scroll ->
-                        ActionJson(
-                            "scroll",
-                            mapOf(
-                                "direction" to action.direction,
-                                "target" to action.target,
-                                "amount" to action.amount.toString(),
-                            ),
-                        )
-                    is AgentAction.Verify -> ActionJson("verify", mapOf("predicate" to action.predicate))
                     is AgentAction.Observe -> ActionJson("observe")
                     is AgentAction.Complete -> ActionJson("complete")
                     is AgentAction.Fail -> ActionJson("fail")

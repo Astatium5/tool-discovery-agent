@@ -6,6 +6,7 @@ import dev.langchain4j.model.chat.ChatModel
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -14,7 +15,6 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import model.AgentAction
 import perception.UiDelta
 import perception.UiDeltaFormatter
-import perception.UiTreeFormatter
 import perception.parser.ScopedSnapshotBuilder
 import perception.parser.UiComponent
 import perception.parser.UiTreeParser
@@ -35,7 +35,6 @@ import recipe.VerifiedRecipe
  */
 class LLMReasoner(
     private val llm: ChatModel,
-    private val promptLogger: PromptLogger? = null,
 ) {
     /**
      * A decision made by the LLM.
@@ -175,11 +174,7 @@ class LLMReasoner(
     )
 
     companion object {
-        /**
-         * Prompt contract — sections appear in a fixed order so the LLM can
-         * rely on positional cues, and deltas between runs are easy to diff.
-         */
-        private const val DECISION_PROMPT = """You are a developer using IntelliJ IDEA. Your goal is to accomplish a task by interacting with the UI.
+        private const val DECISION_PROMPT = """You are a developer using IntelliJ IDEA. Accomplish the task by interacting with the UI.
 
 ## Task
 {{INTENT}}
@@ -197,239 +192,62 @@ class LLMReasoner(
 
 {{RECIPE_SECTION}}
 
-## Allowed Actions (schema)
+## Actions
 
-All examples below use `<placeholder: type — hint>`. Replace each placeholder
-with a concrete value derived from the UI Snapshot. Do NOT copy placeholder
-text literally.
+Return a single JSON object. Use lowercase snake_case for "type".
 
-**Type-string convention**: the `"type"` field MUST be the **lowercase
-snake_case** string shown in each schema (e.g. `"open_file"`, `"move_caret"`,
-`"open_context_menu"`, `"click_menu_item"`). The bold header next to each
-entry (e.g. "**MoveCaret**") is a human-readable label for your reasoning —
-do NOT put it in the JSON.
+Navigation:
+  open_file:     {"type":"open_file","path":"<filename>"}
+  move_caret:    {"type":"move_caret","symbol":"<identifier>"}
+  select_lines:  {"type":"select_lines","start":<int>,"end":<int>}
+  focus_editor:  {"type":"focus_editor"}
 
-**Output shape (single JSON object, no prose, no XML tool-call tags)**:
+Menu & dialog:
+  open_context_menu:  {"type":"open_context_menu"}
+  close_all_popups:   {"type":"close_all_popups"}
+  cancel_dialog:      {"type":"cancel_dialog"}
 
-```
-{
-  "reasoning": "…",
-  "action": { "type": "move_caret", "symbol": "compute" },
-  "expected_result": "…",
-  "confidence": 0.85,
-  "task_complete": false
-}
-```
+Click & type:
+  click_menu_item:  {"type":"click_menu_item","target":"<menu label>"}
+  click_button:     {"type":"click_button","target":"<button label>"}
+  type:             {"type":"type","text":"<string>","clearFirst":<bool>,"target":"<field|null>"}
+  press_key:        {"type":"press_key","key":"<Enter|Escape|Tab|ArrowDown>"}
 
-### Navigation
-- **OpenFile** — `{"type": "open_file", "path": <string: filename only, e.g. the exact tab title>}`
-- **MoveCaret** — `{"type": "move_caret", "symbol": <string: identifier text visible in the editor>}`
-- **SelectLines** — `{"type": "select_lines", "start": <int: 1-based line>, "end": <int: 1-based line>}`
-- **FocusEditor** — `{"type": "focus_editor"}`
+Control:
+  observe:   {"type":"observe"}
+  complete:  {"type":"complete"}
+  fail:      {"type":"fail"}
 
-### Menu & dialog control
-- **OpenContextMenu** — `{"type": "open_context_menu"}` (right-click at caret; the ONLY way to reach Refactor / Go To / Generate / etc.)
-- **CloseAllPopups** — `{"type": "close_all_popups"}` (recovery: Escape-drain all popups/dialogs)
-- **CancelDialog** — `{"type": "cancel_dialog"}` (close topmost dialog only, verified)
+## Refactoring workflow
 
-### UI interaction
-- **ClickMenuItem** — `{"type": "click_menu_item", "target": <string: exact label of a menu item from Active Window>}`
-- **ClickButton** — `{"type": "click_button", "target": <string: exact label of a dialog button>}`
-- **Click** — `{"type": "click", "target": <string: label>}` (generic; prefer ClickMenuItem or ClickButton when you know which it is)
-- **Type** — `{"type": "type", "text": <string: what to type>, "clearFirst": <bool>, "target": <string|null: field label>}`
-- **SelectDropdown** — `{"type": "select_dropdown", "target": <string: dropdown label>, "value": <string: option label>}`
-- **SetCheckbox** — `{"type": "set_checkbox", "target": <string: checkbox label>, "checked": <bool>}`
-- **Scroll** — `{"type": "scroll", "direction": <"up"|"down"|"page_up"|"page_down"|"home"|"end">, "target": <string: list/tree label or "">, "amount": <int>}`
-- **PressKey** — `{"type": "press_key", "key": <string: single key name, e.g. "Enter"/"Escape"/"Tab"/"ArrowDown">}`
-  Use for **single keys only** — Enter to commit a dialog/template, Escape to cancel, Tab/Arrow to navigate list items. **Do NOT use for keyboard shortcuts** like `"Shift+F6"` or `"Ctrl+R"`; use the context menu instead.
-- **Wait** — `{"type": "wait", "elementType": <"dialog"|"popup"|"textfield">, "timeout": <int: ms, optional>}`
+For rename, change signature, extract, find usages, etc.:
 
-### Verification & control
-- **Verify** — `{"type": "verify", "predicate": <string>}`
-  Predicate forms:
-  - UI-surface: `dialog_open:<title>`, `popup_open`, `no_popup`,
-    `context=<CTX>`, `button_enabled:<label>`, `field_present:<label>`,
-    `focused:<label>`.
-  - Source content (checked against the current Visible Source window):
-    `source_contains:<text>` — true iff the visible source contains `<text>`.
-    `source_absent:<text>` — true iff the visible source does NOT contain `<text>`.
-    `line_contains:<line>:<text>` — true iff the given 1-based line
-    (must be inside the Visible Source window) contains `<text>`.
-  - Full-document content (scans the WHOLE open file, not just the
-    visible window — use these when the change you want to confirm is
-    far from the caret, e.g. after Change Signature the caret stays on
-    a call site but the modified declaration is hundreds of lines
-    away):
-    `file_contains:<text>` — true iff the entire file contains `<text>`.
-    `file_absent:<text>`   — true iff the entire file does NOT contain `<text>`.
-  These are the tools for confirming that a code change actually landed
-  (e.g. after a rename or change-signature refactor). Prefer `file_*`
-  over `source_*` when the edit may be off-screen.
-- **Observe** — `{"type": "observe"}` (re-observe without acting)
-- **Complete** — `{"type": "complete"}`
-- **Fail** — `{"type": "fail"}`
+  Step 1: File open?    → No → OpenFile.  Yes → skip.
+  Step 2: Caret on symbol? → No → MoveCaret.  Yes → skip.
+          (Check Visible Source — if symbol is visible with cursor near it, it's positioned.)
+  Step 3: OpenContextMenu
+  Step 4: ClickMenuItem("Refactor")
+  Step 5: ClickMenuItem("Rename..." / "Change Signature..." / etc.)
 
-## Preferred Flows
-
-IDE commands are reached via the **right-click context menu**, not shortcuts or
-action IDs. The Active Window after `OpenContextMenu` lists the visible menu
-items — click the one you want by its exact label.
-
-- **Rename a symbol** (method / variable / class):
-  `MoveCaret(<old_name>)` →
-  `OpenContextMenu` →
-  `ClickMenuItem("Refactor")` (opens submenu) →
-  `ClickMenuItem("Rename...")` →
-  INLINE_WIDGET appears (or a Rename dialog) →
-  `Type(<new_name>, clearFirst=false)` →
-  `PressKey("Enter")` (commits — Active Context returns to EDITOR) →
-  **Confirm outcome** with Verify on the new Visible Source:
-  `Verify("source_contains:<new_name>")` AND
-  `Verify("source_absent:<old_name>")` →
-  set `task_complete: true`.
-
-- **Change Signature of a method** (e.g. change visibility, add/remove params):
-  `MoveCaret(<method_name>)` →
-  `OpenContextMenu` →
-  `ClickMenuItem("Refactor")` →
-  `ClickMenuItem("Change Signature...")` →
-  A "Change Signature" DIALOG opens. Operate on it:
-    - change visibility → `SelectDropdown("Visibility", "<Private|Package-private|Protected|Public>")`
-      (exact label shown in the dialog's visibility combobox).
-    - add param → use the dialog's buttons / table as shown in Active Window.
-  →  `ClickButton("Refactor")` to commit (if the dialog is still open —
-     a `SelectDropdown` may auto-commit on some IntelliJ versions and
-     the dialog closes on its own). Once Active Context returns to
-     EDITOR the caret stays on the call site, NOT the declaration, so
-     the modified signature is typically OFF-SCREEN. Confirm with the
-     full-document predicates:
-     `Verify("file_contains:<expected_new_signature_fragment>")` AND
-     `Verify("file_absent:<old_signature_fragment>")`.
-  → `task_complete: true`.
-  Example (change `private <ret> foo(...)` to package-private):
-    `Verify("file_absent:private <ret> foo")` then
-    `Verify("file_contains:<ret> foo")` → complete.
-
-- **Go to method declaration** (only needed if a task REQUIRES the caret be on
-  the declaration — usually it doesn't; see rule 12):
-  `MoveCaret(<symbol>)` →
-  `OpenContextMenu` →
-  `ClickMenuItem("Go To")` →
-  `ClickMenuItem("Declaration or Usages")`.
-
-- **Find usages of a symbol**:
-  `MoveCaret(<symbol>)` →
-  `OpenContextMenu` →
-  `ClickMenuItem("Find Usages")`.
-
-- **Reformat a file**:
-  `OpenContextMenu` →
-  `ClickMenuItem("Reformat Code")`.
-
-- **Recover from a stacked popup dead-end**: `CloseAllPopups`, then resume.
+For inline rename/extract (Active Context = INLINE_WIDGET):
+  → Type(<new_name>, clearFirst=false) → PressKey("Enter"). Do not Observe.
 
 ## Rules
 
-1. NAVIGATE FIRST: if the task names a file, start with OpenFile.
-2. POSITION CURSOR: use MoveCaret or SelectLines to place the caret on the target symbol/range before triggering refactors. The context menu acts on whatever the caret is currently on.
-3. USE THE CONTEXT MENU FOR IDE COMMANDS: refactors, "Go To", "Find Usages", "Reformat Code", "Generate", etc. are all reached via `OpenContextMenu` → `ClickMenuItem(<label>)`. NEVER synthesise keyboard shortcuts with PressKey.
-4. READ "What changed": if it says NO PROGRESS, your last action did nothing — do NOT repeat it. Pick a different action, use Verify to check assumptions, or CloseAllPopups to recover.
-5. ACT ON THE ACTIVE WINDOW ONLY: only the topmost window's items are listed; background windows are titles only. After `OpenContextMenu`, the menu items are listed in the Active Window — use `ClickMenuItem` on an EXACT label from that list.
-6. RECOGNISE COMPLETION FROM THE SNAPSHOT: the `Visible Source` block shows
-   the live source around the caret. After a refactor / edit, READ IT. If
-   the observable end-state the task described is already present there
-   (e.g. the new identifier appears where the old one used to be), the task
-   is done. Do NOT spin another `Observe` or `MoveCaret` "to check" — the
-   snapshot already contains the answer. Use `Verify` with a
-   `source_contains` / `source_absent` predicate to confirm and then set
-   `task_complete: true` in the same turn.
-7. NEVER pick Observe when Active Context is EDITOR and no popup/dialog is open — Observe only refreshes perception. Use OpenFile, MoveCaret, SelectLines, OpenContextMenu, or Verify instead.
-8. INLINE WIDGET flow: when Active Context is INLINE_WIDGET (an in-place rename/extract template is live), the old identifier is ALREADY selected in the editor. Do NOT click anything and do NOT set clearFirst=true — just `Type(<new_name>, clearFirst=false)` then `PressKey("Enter")` to commit, or `PressKey("Escape")` to cancel. Never Observe in this state: typing is the only way to make progress.
-9. PICK THE SPECIFIC CLICK VARIANT: in POPUP_MENU/POPUP_CHOOSER use ClickMenuItem; in DIALOG use ClickButton. Use generic Click only when unsure.
-10. SUBMENUS: some context-menu entries open nested submenus (e.g. "Refactor" → "Rename...", "Go To" → "Declaration or Usages"). After `ClickMenuItem` on a parent, the submenu's items appear in the next Active Window — click the child item there.
-11. DON'T CHASE THE OLD IDENTIFIER AFTER A RENAME: once a rename commits, the
-    old name is GONE from the file. A subsequent `MoveCaret("<old_name>")` will
-    (correctly) fail with "symbol not found". That failure is EVIDENCE the
-    rename worked — treat it as a completion signal, not a problem to retry.
-12. REFACTORINGS RESOLVE SYMBOLS AUTOMATICALLY. When the caret is on ANY
-    occurrence of a method/variable — call site OR declaration — IntelliJ's
-    `Refactor → Rename / Change Signature / Find Usages / ...` act on the
-    symbol itself, not on that specific textual occurrence. You do NOT need
-    to navigate to the method declaration first. `MoveCaret("<method>")` lands
-    on the first textual occurrence (often a call site); that is fine. Go
-    straight to `OpenContextMenu` → `ClickMenuItem("Refactor")` next.
-13. "CARET ALREADY ON …" IS A GO-AHEAD SIGNAL. If the previous action's
-    result says "Caret was already on '<symbol>'", the precondition for the
-    next step is satisfied. Do NOT re-issue `MoveCaret` — advance to the
-    next step of the flow (`OpenContextMenu`, the refactor, etc.). Repeating
-    `MoveCaret` on the same symbol is a LOOP.
+1. Skip steps that are already done. If file is open, don't OpenFile. If caret is on the symbol, don't MoveCaret.
+2. IDE commands go through context menu: OpenContextMenu → ClickMenuItem. Never use keyboard shortcuts for refactors.
+3. If NO PROGRESS in "What changed", do NOT repeat. Try CloseAllPopups or a different action.
+4. After refactor, check Visible Source. If the end-state is present, set task_complete=true. Do not re-observe.
 
-## Task completion rubric
-
-A task is complete when the Visible Source / UI state shows the observable
-end-state described by the Task. Concrete patterns:
-
-- **Rename refactor** (`rename X to Y`):
-  Completion signals (any is sufficient):
-  (a) `Visible Source` contains `Y` at a location that used to contain `X`
-      (inline widget has already closed — Active Context back to EDITOR).
-  (b) `MoveCaret("X")` returns "Symbol not found" AND `Visible Source`
-      contains `Y`.
-  Decision: emit one `Verify("source_contains:Y")` (and optionally
-  `Verify("source_absent:X")`); if it succeeds, the very next decision sets
-  `task_complete: true` with action `{"type": "complete"}`. Do NOT keep
-  re-observing or re-navigating.
-
-- **File open / navigate**:
-  Completion signal: the breadcrumb / Editor line of the snapshot names the
-  target file and the caret is positioned as requested. Emit `Complete`.
-
-- **Change Signature refactor** (visibility / parameter / return-type change):
-  The Change Signature dialog CLOSING is the primary success signal
-  (`What changed` shows `closed: "Change Signature" (DIALOG)` and Active
-  Context is back to EDITOR). The caret typically stays on the call
-  site you triggered from — the modified method DECLARATION is usually
-  OFF-SCREEN, so `Visible Source` may not show it. Use the full-document
-  predicates: `Verify("file_contains:<new-signature-fragment>")` AND/OR
-  `Verify("file_absent:<old-signature-fragment>")`. If either confirms,
-  set `task_complete: true` on the next turn. Do NOT re-navigate or
-  re-trigger the refactor.
-
-- **Edit that produces a dialog** (e.g. Extract Method dialog):
-  Completion signal: the dialog closes with success and `Visible Source`
-  (or `file_contains` for off-screen edits) contains the expected new
-  fragment.
-
-General principle — **"dialog closed" + "file_contains check passed" ≡
-task done** for any refactor. Once `What changed` shows the refactor
-dialog closing back to EDITOR, the edit has already been applied; your
-only remaining job is to confirm with a single `Verify` and emit
-`Complete`. Re-issuing `MoveCaret` / re-opening the context menu at
-this point is stagnation.
-
-If you are uncertain whether the end-state holds, issue ONE targeted
-`Verify` — never more than two in a row. Repeated `Verify` with the same
-predicate is stagnation.
-
-Return JSON (only JSON, no other text):
+Return JSON:
 {
-  "reasoning": "Analyze what you see and explain your decision.",
-  "assumptions": "Fill this ONLY if 'What changed' said NO PROGRESS — explain why the last action failed.",
-  "action": {
-    "type": "<one of the action types above>",
-    "...": "...action-specific fields..."
-  },
-  "expected_result": "What you expect to happen",
+  "reasoning": "…",
+  "assumptions": "… only if NO PROGRESS",
+  "action": { "type": "<action_type>" },
+  "expected_result": "…",
   "confidence": 0.0-1.0,
-  "task_complete": true/false
+  "task_complete": false
 }
-
-## Confidence
-- 0.9-1.0: Element is visible and action is clearly correct.
-- 0.7-0.9: Clear evidence supports this action.
-- 0.5-0.7: Logical next step.
-- 0.3-0.5: Educated guess.
-- 0.0-0.3: Fallback.
 """
     }
 
@@ -444,27 +262,12 @@ Return JSON (only JSON, no other text):
         val systemPrompt = "You are an expert developer using IntelliJ IDEA."
 
         return try {
-            val started = System.currentTimeMillis()
             val response =
                 llm.chat(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(prompt),
                 )
-            val durationMs = System.currentTimeMillis() - started
             val rawText = response.aiMessage().text()
-            promptLogger?.log(
-                context =
-                    PromptLogger.LogContext(
-                        caller = "LLMReasoner.decide",
-                        intent = context.intent,
-                        iteration = context.actionHistory.size + 1,
-                    ),
-                model = describeModel(),
-                messages = PromptLogger.messages(systemPrompt, prompt),
-                rawResponse = rawText,
-                parsedResponse = rawText,
-                durationMs = durationMs,
-            )
             parseDecision(rawText)
         } catch (e: Exception) {
             println("  LLMReasoner: LLM call failed, returning Observe action: ${e.message}")
@@ -591,55 +394,10 @@ Use the available primitive actions and observe the UI after each action."""
         profile: ApplicationProfile,
         editorCode: ScopedSnapshotBuilder.EditorCode? = null,
     ): String {
-        // Ensure the parser applies the same semantic profile as the snapshot.
         UiTreeParser.profile = profile
 
         val snapshot = ScopedSnapshotBuilder.buildCompactSnapshot(uiTree, profile, editorCode)
-        val rendered = ScopedSnapshotBuilder.formatCompactSnapshot(snapshot)
-
-        if (shouldUseFullTreeFallback(snapshot, uiTree, profile)) {
-            return UiTreeFormatter.format(uiTree, profile)
-        }
-
-        return rendered
-    }
-
-    /**
-     * Fall back to the full-tree formatter only when the compact view is
-     * clearly under-representing the live UI.
-     *
-     * Uses [ApplicationProfile] predicates (not class-name string matches) so
-     * misclassification is surfaced via the profile rather than hidden here.
-     */
-    private fun shouldUseFullTreeFallback(
-        snapshot: ScopedSnapshotBuilder.CompactSnapshot,
-        uiTree: List<UiComponent>,
-        profile: ApplicationProfile,
-    ): Boolean {
-        val all = UiTreeParser.flatten(uiTree)
-        val activeWindow = snapshot.activeWindow
-        val activeIsEmpty =
-            activeWindow.fields.isEmpty() &&
-                activeWindow.buttons.isEmpty() &&
-                activeWindow.menuItems.isEmpty()
-
-        val hasEditor = all.any { profile.isEditor(it.cls) }
-        val hasDialog = all.any { profile.isDialog(it.cls) }
-        val hasPopup = all.any { profile.isPopupWindow(it.cls) }
-
-        val missedEditor = hasEditor && snapshot.editor == null
-        val missedDialog =
-            hasDialog &&
-                snapshot.windowStack.none { it.type == ScopedSnapshotBuilder.ActiveContext.DIALOG }
-        val missedPopup =
-            hasPopup &&
-                snapshot.windowStack.none {
-                    it.type == ScopedSnapshotBuilder.ActiveContext.POPUP_MENU ||
-                        it.type == ScopedSnapshotBuilder.ActiveContext.POPUP_CHOOSER ||
-                        it.type == ScopedSnapshotBuilder.ActiveContext.INLINE_WIDGET
-                }
-
-        return (activeIsEmpty && (hasDialog || hasPopup)) || missedEditor || missedDialog || missedPopup
+        return ScopedSnapshotBuilder.formatCompactSnapshot(snapshot)
     }
 
     /**
@@ -681,11 +439,9 @@ Use the available primitive actions and observe the UI after each action."""
      */
     private fun describeAction(action: AgentAction): String {
         return when (action) {
-            // Navigation actions
             is AgentAction.OpenFile -> "Open file '${action.path}'"
             is AgentAction.MoveCaret -> "Move caret to '${action.symbol}'"
             is AgentAction.SelectLines -> "Select lines ${action.start}-${action.end}"
-            // UI interaction actions
             is AgentAction.Click -> "Click on '${action.target}'"
             is AgentAction.ClickMenuItem -> "Click menu item '${action.target}'"
             is AgentAction.ClickButton -> "Click button '${action.target}'"
@@ -693,17 +449,8 @@ Use the available primitive actions and observe the UI after each action."""
             is AgentAction.CloseAllPopups -> "Close all popups"
             is AgentAction.Type -> "Type '${action.text}' (clearFirst=${action.clearFirst})"
             is AgentAction.PressKey -> "Press ${action.key}"
-            is AgentAction.SelectDropdown -> "Select '${action.value}' from '${action.target}'"
-            is AgentAction.Wait -> "Wait for ${action.elementType}"
-            is AgentAction.UseRecipe -> "Use recipe '${action.recipeId}'"
             is AgentAction.FocusEditor -> "Focus editor"
             is AgentAction.CancelDialog -> "Cancel dialog (Escape)"
-            is AgentAction.SetCheckbox -> "Set checkbox '${action.target}' = ${action.checked}"
-            is AgentAction.Scroll ->
-                "Scroll ${action.direction}" +
-                    (if (action.target.isNotBlank()) " on '${action.target}'" else "") +
-                    " x${action.amount}"
-            is AgentAction.Verify -> "Verify '${action.predicate}'"
             is AgentAction.Observe -> "Observe UI state"
             is AgentAction.Complete -> "Task complete"
             is AgentAction.Fail -> "Task failed"
@@ -796,35 +543,8 @@ Use the available primitive actions and observe the UI after each action."""
                         target = target,
                     )
                 "press_key" -> AgentAction.PressKey(key ?: "Enter")
-                "select_dropdown" ->
-                    AgentAction.SelectDropdown(
-                        target = target ?: "",
-                        value = value ?: "",
-                    )
-                "wait" ->
-                    AgentAction.Wait(
-                        elementType = elementType ?: "dialog",
-                        timeoutMs = timeout ?: 5000,
-                    )
-                "use_recipe" ->
-                    AgentAction.UseRecipe(
-                        recipeId = recipeId ?: "",
-                        params = params ?: emptyMap(),
-                    )
                 "focus_editor" -> AgentAction.FocusEditor
                 "cancel_dialog" -> AgentAction.CancelDialog
-                "set_checkbox" ->
-                    AgentAction.SetCheckbox(
-                        target = target ?: "",
-                        checked = checked ?: true,
-                    )
-                "scroll" ->
-                    AgentAction.Scroll(
-                        direction = direction ?: "down",
-                        target = target ?: "",
-                        amount = amount ?: 1,
-                    )
-                "verify" -> AgentAction.Verify(predicate = predicate ?: (target ?: ""))
                 // Control actions
                 "observe" -> AgentAction.Observe
                 "complete" -> AgentAction.Complete
@@ -902,6 +622,7 @@ Use the available primitive actions and observe the UI after each action."""
     private fun parseDecision(response: String): Decision {
         return try {
             val jsonText = extractJsonFromResponse(response)
+                .replace(Regex("""\\(?=")"""), "")
 
             // Parse as a generic JsonElement first so we can patch shorthand
             // forms (e.g. string action) before binding to ActionDto.
@@ -934,30 +655,111 @@ Use the available primitive actions and observe the UI after each action."""
     /**
      * Patch common LLM shorthand so the payload matches [LLMDecisionDto].
      *
-     * Currently only normalises `"action": "<type>"` → `"action": {"type":"<type>"}`.
-     * Everything else passes through unchanged.
+     * Handles four cases that small local models (e.g. 8B LLMs) regularly emit:
+     *   - `"action": "<type>"` → `"action": {"type":"<type>"}`     (string shorthand)
+     *   - `"action": [ {...} ]` → `"action": { ... }`              (singleton array)
+     *   - `"action": [ {...}, {...} ]` → `"action": {first}`        (multi-element: model
+     *     treats `action` as a plan, executor executes one step at a time)
+     *   - `"assumptions": [...]` → `"assumptions": "..."`          (string field rendered as array)
+     *
+     * The action-wrapping is especially common with small models because the
+     * JSON examples in their training data often use lists. The multi-element
+     * case is rarer but seen — the model emits a sequence of actions
+     * anticipating a planner executor, when ours only handles one at a time.
+     * We pick the first object and ignore the rest; the agent loop will
+     * emit the next action in the next iteration. Without the lenient
+     * normalisation the parse fails and the agent falls through to Observe,
+     * which burns iterations and budget.
      */
     private fun normalizeDecisionJson(element: JsonElement): JsonElement {
         if (element !is JsonObject) return element
         val action = element["action"]
-        if (action !is JsonPrimitive || !action.isString) return element
+        val assumptions = element["assumptions"]
 
-        val typeString = action.content
-        val patched =
-            buildJsonObject {
-                element.entries.forEach { (k, v) ->
-                    if (k == "action") {
-                        put(
-                            "action",
-                            buildJsonObject { put("type", JsonPrimitive(typeString)) },
-                        )
-                    } else {
-                        put(k, v)
+        val actionStringShorthand =
+            action is JsonPrimitive && action.isString &&
+                !tryParseJsonString(action.content).isStringWithEmbeddedJson()
+        val actionStringifiedJson =
+            action is JsonPrimitive && action.isString &&
+                tryParseJsonString(action.content).isStringWithEmbeddedJson()
+        val actionArray =
+            action is JsonArray && action.isNotEmpty() && action.all { it is JsonObject }
+        val assumptionsNeedsFix = assumptions is JsonArray || assumptions is JsonObject
+
+        if (!actionStringShorthand && !actionStringifiedJson && !actionArray && !assumptionsNeedsFix) {
+            return element
+        }
+
+        return buildJsonObject {
+            element.entries.forEach { (k, v) ->
+                when {
+                    // action shorthand: "action": "<type>" → {"type":"<type>"}
+                    k == "action" && actionStringShorthand -> {
+                        val typeString = (v as JsonPrimitive).content
+                        put(k, buildJsonObject { put("type", JsonPrimitive(typeString)) })
                     }
+                    // action as stringified JSON: "action": "{\"type\": ...}" → parsed
+                    // Small local models sometimes wrap the action object as an
+                    // escaped JSON string instead of emitting it directly. Parse
+                    // the inner JSON and use it as the action value.
+                    k == "action" && actionStringifiedJson -> {
+                        val parsed =
+                            (
+                                tryParseJsonString((v as JsonPrimitive).content)
+                                    as ParseResult.Success
+                            ).element
+                        put(k, parsed)
+                    }
+                    // action as array (one or more) — keep the first, drop the rest
+                    k == "action" && actionArray -> {
+                        put(k, (v as JsonArray)[0])
+                    }
+                    // assumptions as array/object → flatten to string
+                    k == "assumptions" && assumptionsNeedsFix -> {
+                        put(k, JsonPrimitive(flattenToString(v)))
+                    }
+                    else -> put(k, v)
                 }
             }
-        return patched
+        }
     }
+
+    private sealed class ParseResult {
+        data class Success(val element: JsonElement) : ParseResult()
+
+        data object NotJson : ParseResult()
+    }
+
+    private fun tryParseJsonString(s: String): ParseResult {
+        val trimmed = s.trim()
+        if (trimmed.isEmpty()) return ParseResult.NotJson
+        if (trimmed[0] != '{' && trimmed[0] != '[') return ParseResult.NotJson
+        return try {
+            ParseResult.Success(jsonParser.parseToJsonElement(trimmed))
+        } catch (_: Exception) {
+            ParseResult.NotJson
+        }
+    }
+
+    private fun ParseResult?.isStringWithEmbeddedJson(): Boolean =
+        this is ParseResult.Success && (
+            this.element is JsonObject || (
+                this.element is JsonArray &&
+                    (this.element as JsonArray).isNotEmpty() &&
+                    (this.element as JsonArray).all { it is JsonObject }
+            )
+        )
+
+    private fun flattenToString(element: JsonElement): String =
+        when (element) {
+            is JsonPrimitive -> element.content
+            is JsonArray ->
+                element
+                    .map { flattenToString(it) }
+                    .filter { it.isNotBlank() }
+                    .joinToString("; ")
+            is JsonObject -> element.toString()
+        }
 
     /**
      * Extract the JSON decision object from an LLM response.

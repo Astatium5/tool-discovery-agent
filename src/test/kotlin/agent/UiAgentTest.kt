@@ -1,7 +1,7 @@
 package agent
 
 import dev.langchain4j.model.chat.ChatModel
-import execution.UiExecutor
+import execution.InProcessGuiExecutor
 import llm.LlmModel
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
@@ -26,7 +26,7 @@ class UiAgentTest : BaseTest() {
     private lateinit var uiAgent: UiAgent
     private lateinit var llm: ChatModel
     private lateinit var profile: ApplicationProfile
-    private lateinit var executor: UiExecutor
+    private lateinit var executor: InProcessGuiExecutor
 
     @BeforeEach
     fun setup() {
@@ -39,16 +39,18 @@ class UiAgentTest : BaseTest() {
         profile = ApplicationProfile.loadFromFile("build/reports/app-profile.json")
             ?: ApplicationProfile(appName = "IntelliJ IDEA")
 
-        // Create UiExecutor with the robot from BaseTest
-        executor = UiExecutor(robot)
+        // In-process executor requires a Project from IntelliJ's ApplicationManager.
+        // When running as a plugin test inside the IDE, this is available.
+        val project = com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
+            ?: throw IllegalStateException("No open project found. Run './gradlew runIdeForUiTests' first.")
+        executor = InProcessGuiExecutor(project)
 
-        // Create the UI agent with IDE integration
         uiAgent =
             UiAgent(
                 llm = llm,
                 profile = profile,
                 executor = executor,
-                uiTreeProvider = { executor.fetchUiTree() },
+                uiTreeProvider = { executor.getEditorContext()?.let { emptyList() } ?: emptyList() },
             )
     }
 

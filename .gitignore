@@ -23,3 +23,10 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Agents
+.cursor
+.opencode
+openspec/
+.serena
+.sisyphus

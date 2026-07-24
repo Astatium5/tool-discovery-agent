@@ -27,6 +27,12 @@
                     text="Launch Agent"
                     description="Start the Tool Discovery Agent"
                     icon="AllIcons.Actions.Find"/>
+
+            <action id="ToolDiscovery.RunTest"
+                    class="execution.RunTestAction"
+                    text="Run Test Script"
+                    description="Execute the test script in TestScript.kt"
+                    icon="AllIcons.Actions.Execute"/>
         </group>
     </actions>
 </idea-plugin>

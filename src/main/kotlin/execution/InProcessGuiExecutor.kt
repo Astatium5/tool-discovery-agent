@@ -239,7 +239,9 @@ class InProcessGuiExecutor(
                         "search",
                         dataContext,
                     )
-                action.actionPerformed(event)
+                com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                    action.actionPerformed(event)
+                }
                 return@runOnEdtAndWait
             }
 
@@ -774,25 +776,26 @@ class InProcessGuiExecutor(
      */
     fun openFile(path: String) {
         runOnEdtAndWait {
-            val actionManager = com.intellij.openapi.actionSystem.ActionManager.getInstance()
-            val action =
-                actionManager.getAction("GotoFile")
-                    ?: throw IllegalStateException("GotoFile action not found")
-            val dataManager = com.intellij.ide.DataManager.getInstance()
-            val frame = findMainFrame() ?: throw IllegalStateException("No main frame")
-            val dataContext = dataManager.getDataContext(frame.contentPane)
-            action.actionPerformed(
-                com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
-                    action,
-                    null,
-                    "search",
-                    dataContext,
-                ),
-            )
+            val project =
+                com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
+                    ?: throw IllegalStateException("No open project")
+            val fileName = path.substringAfterLast('/')
+            val scope = com.intellij.psi.search.GlobalSearchScope.projectScope(project)
+            val files =
+                com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(
+                    fileName,
+                    scope,
+                )
+            val file =
+                files.firstOrNull {
+                    it.path.endsWith(path) || it.name.equals(fileName, ignoreCase = true)
+                }
+                    ?: throw IllegalStateException("File '$path' not found in project")
+            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+                com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+                    .openFile(file, true)
+            }
         }
-        waitForDialog(timeoutMs = 2000)
-        typeInFocusedField(path)
-        pressKey("Enter")
     }
 
     /**

@@ -114,22 +114,19 @@ class InProcessGuiExecutor(
     private fun openContextMenuOnEdt(): Boolean {
         val editor = findEditorInternal() ?: return false
         val actionManager = com.intellij.openapi.actionSystem.ActionManager.getInstance()
-        val group =
-            actionManager.getAction("EditorPopupMenu") as? com.intellij.openapi.actionSystem.ActionGroup
-                ?: return false
+        val action = actionManager.getAction("EditorShowContextMenu") ?: return false
         val dataManager = com.intellij.ide.DataManager.getInstance()
         val dataContext = dataManager.getDataContext(editor.contentComponent)
-        val popup =
-            com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
-                .createActionGroupPopup(
-                    null,
-                    group!!,
-                    dataContext,
-                    com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.ALPHA_NUMBERING,
-                    false,
-                )
-        (popup as com.intellij.openapi.ui.popup.JBPopup).showInBestPositionFor(dataContext)
-        activePopup = popup as com.intellij.openapi.ui.popup.JBPopup
+        val event =
+            com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
+                action,
+                null,
+                "editorPopupMenu",
+                dataContext,
+            )
+        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+            action.actionPerformed(event)
+        }
         return true
     }
 
@@ -236,7 +233,7 @@ class InProcessGuiExecutor(
                     com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
                         action,
                         null,
-                        "search",
+                        "editorPopupMenu",
                         dataContext,
                     )
                 com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {

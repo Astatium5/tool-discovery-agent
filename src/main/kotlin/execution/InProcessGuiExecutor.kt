@@ -50,18 +50,33 @@ class InProcessGuiExecutor(
 
     fun <T> runOnEdtAndWait(block: () -> T): T {
         if (isOnEdt()) return block()
+        return runOnEdtAndWaitWithModality(
+            com.intellij.openapi.application.ModalityState.defaultModalityState(),
+            block,
+        )
+    }
+
+    private fun <T> runOnEdtAndWaitWithModality(
+        modalityState: com.intellij.openapi.application.ModalityState,
+        block: () -> T,
+    ): T {
+        if (isOnEdt()) return block()
         val holder = arrayOfNulls<Any>(1)
         val throwable = arrayOfNulls<Throwable>(1)
-        SwingUtilities.invokeAndWait {
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait({
             try {
                 holder[0] = block()
             } catch (t: Throwable) {
                 throwable[0] = t
             }
-        }
+        }, modalityState)
         throwable[0]?.let { throw it }
         @Suppress("UNCHECKED_CAST")
         return holder[0] as T
+    }
+
+    private fun trace(message: String) {
+        println("    InProcessGuiExecutor: $message")
     }
 
     // ── Window / frame access ────────────────────────────────────────────────
@@ -77,10 +92,14 @@ class InProcessGuiExecutor(
             frame?.jMenuBar
         }
 
-    fun findTopmostDialog(): JDialog? =
-        runOnEdtAndWait {
-            ComponentTreeWalker.getTopmostDialog()
-        }
+    fun findTopmostDialog(): JDialog? {
+        if (isOnEdt()) return ComponentTreeWalker.getTopmostDialog()
+        var dialog: JDialog? = null
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait({
+            dialog = ComponentTreeWalker.getTopmostDialog()
+        }, com.intellij.openapi.application.ModalityState.any())
+        return dialog
+    }
 
     /**
      * Open the editor's context menu at the current caret position, in-process
@@ -114,19 +133,22 @@ class InProcessGuiExecutor(
     private fun openContextMenuOnEdt(): Boolean {
         val editor = findEditorInternal() ?: return false
         val actionManager = com.intellij.openapi.actionSystem.ActionManager.getInstance()
-        val action = actionManager.getAction("EditorShowContextMenu") ?: return false
+        val group =
+            actionManager.getAction("EditorPopupMenu") as? com.intellij.openapi.actionSystem.ActionGroup
+                ?: return false
         val dataManager = com.intellij.ide.DataManager.getInstance()
         val dataContext = dataManager.getDataContext(editor.contentComponent)
-        val event =
-            com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
-                action,
-                null,
-                "editorPopupMenu",
-                dataContext,
-            )
-        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
-            action.actionPerformed(event)
-        }
+        val popup =
+                    com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+                .createActionGroupPopup(
+                    null,
+                    group!!,
+                    dataContext,
+                    com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
+                    false,
+                )
+        (popup as com.intellij.openapi.ui.popup.JBPopup).showInBestPositionFor(dataContext)
+        activePopup = popup as com.intellij.openapi.ui.popup.JBPopup
         return true
     }
 
@@ -208,7 +230,18 @@ class InProcessGuiExecutor(
                 } else {
                     val frame = findMainFrame()
                     com.intellij.ide.DataManager.getInstance().getDataContext(frame?.contentPane)
-                }
+            }
+
+            if (core.equals("Rename", ignoreCase = true)) {
+                // RenameDialog.show() is modal and blocks until the dialog
+                // closes. Schedule it after this EDT callback returns so the
+                // calling test script can continue to type and confirm it.
+                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(
+                    { invokeRenameDialog(editor, dataContext) },
+                    com.intellij.openapi.application.ModalityState.current(),
+                )
+                return@runOnEdtAndWait
+            }
 
             val action = findActionByLabel(actionManager, "EditorPopupMenu", core)
             if (action != null) {
@@ -222,23 +255,76 @@ class InProcessGuiExecutor(
                                 null,
                                 action,
                                 dataContext,
-                                com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.ALPHA_NUMBERING,
+                    com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
                                 false,
                             )
                     (subPopup as com.intellij.openapi.ui.popup.JBPopup).showInBestPositionFor(dataContext)
                     activePopup = subPopup
                     return@runOnEdtAndWait
                 }
+                val editorComponent = editor?.contentComponent
+                val mouseEvent =
+                    if (editorComponent != null) {
+                        java.awt.event.MouseEvent(
+                            editorComponent,
+                            java.awt.event.MouseEvent.MOUSE_CLICKED,
+                            System.currentTimeMillis(),
+                            java.awt.event.InputEvent.BUTTON3_DOWN_MASK,
+                            editorComponent.width / 2,
+                            editorComponent.height / 2,
+                            1,
+                            false,
+                        )
+                    } else {
+                        null
+                    }
+
+                val popupList = findPopupListInWindows() ?: run {
+                    val event =
+                        com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
+                            action,
+                            mouseEvent,
+                            "editorPopupMenu",
+                            dataContext,
+                        )
+                    performInProcessAction(action, event, dataContext, editor, core)
+                    return@runOnEdtAndWait
+                }
+
+                val model = popupList.model
+                for (i in 0 until model.size) {
+                    val value = model.getElementAt(i)
+                    val text = value?.toString() ?: continue
+                    val clean = text.removeSuffix("\u2026").removeSuffix("...").trim()
+                    if (clean.equals(core, ignoreCase = true) || text.contains(core, ignoreCase = true)) {
+                        popupList.selectedIndex = i
+                        val cellBounds = popupList.getCellBounds(i, i) ?: continue
+                        val cx = cellBounds.x + cellBounds.width / 2
+                        val cy = cellBounds.y + cellBounds.height / 2
+                        val clickEvent =
+                            java.awt.event.MouseEvent(
+                                popupList,
+                                java.awt.event.MouseEvent.MOUSE_CLICKED,
+                                System.currentTimeMillis(),
+                                0,
+                                cx,
+                                cy,
+                                1,
+                                false,
+                            )
+                        popupList.dispatchEvent(clickEvent)
+                        return@runOnEdtAndWait
+                    }
+                }
+
                 val event =
                     com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
                         action,
-                        null,
+                        mouseEvent,
                         "editorPopupMenu",
                         dataContext,
                     )
-                com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
-                    action.actionPerformed(event)
-                }
+                performInProcessAction(action, event, dataContext, editor, core)
                 return@runOnEdtAndWait
             }
 
@@ -256,6 +342,53 @@ class InProcessGuiExecutor(
                     "If this is a context-menu item (e.g. Refactor → Rename...), " +
                     "call OpenContextMenu first to open the right-click menu.",
             )
+        }
+    }
+
+    /** Invoke Rename through the platform's explicit dialog API. */
+    private fun invokeRenameDialog(
+        editor: com.intellij.openapi.editor.Editor?,
+        dataContext: com.intellij.openapi.actionSystem.DataContext,
+    ) {
+        val activeEditor = editor ?: throw IllegalStateException("No editor is active for Rename")
+        val target =
+            com.intellij.refactoring.rename.PsiElementRenameHandler.getElement(dataContext)
+                ?: com.intellij.codeInsight.TargetElementUtil.findTargetElement(
+                    activeEditor,
+                    com.intellij.codeInsight.TargetElementUtil.getInstance().getAllAccepted(),
+                )
+                ?: throw IllegalStateException("No rename target found at the editor caret")
+        val psiFile =
+            com.intellij.psi.PsiDocumentManager
+                .getInstance(project)
+                .getPsiFile(activeEditor.document)
+                ?: throw IllegalStateException("No PSI file is available for Rename")
+
+        activePopup?.cancel()
+        activePopup = null
+        val nameSuggestionContext = psiFile.findElementAt(activeEditor.caretModel.offset)
+        com.intellij.refactoring.rename.PsiElementRenameHandler.rename(
+            target,
+            project,
+            nameSuggestionContext,
+            activeEditor,
+        )
+    }
+
+    private fun performInProcessAction(
+        action: com.intellij.openapi.actionSystem.AnAction,
+        event: com.intellij.openapi.actionSystem.AnActionEvent,
+        dataContext: com.intellij.openapi.actionSystem.DataContext,
+        editor: com.intellij.openapi.editor.Editor?,
+        label: String,
+    ) {
+        if (label.equals("Rename", ignoreCase = true)) {
+            invokeRenameDialog(editor, dataContext)
+            return
+        }
+
+        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+            action.actionPerformed(event)
         }
     }
 
@@ -389,6 +522,15 @@ class InProcessGuiExecutor(
                 val found = findListIn(component.getComponent(i))
                 if (found != null) return found
             }
+        }
+        return null
+    }
+
+    private fun findPopupListInWindows(): javax.swing.JList<*>? {
+        for (window in Window.getWindows()) {
+            if (!window.isVisible) continue
+            val list = findListIn(window)
+            if (list != null && list.model.size > 0) return list
         }
         return null
     }
@@ -788,10 +930,8 @@ class InProcessGuiExecutor(
                     it.path.endsWith(path) || it.name.equals(fileName, ignoreCase = true)
                 }
                     ?: throw IllegalStateException("File '$path' not found in project")
-            com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
-                com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
-                    .openFile(file, true)
-            }
+            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+                .openFile(file, true)
         }
     }
 
@@ -853,7 +993,26 @@ class InProcessGuiExecutor(
         value: String,
         clearFirst: Boolean = true,
     ) {
+        trace("typeInDialog start valueLength=${value.length} thread=${Thread.currentThread().name}")
         waitForDialog(timeoutMs = 1000)
+        trace("typeInDialog waitForDialog returned")
+
+        val fieldDeadline = System.currentTimeMillis() + 2000
+        var attempts = 0
+        while (System.currentTimeMillis() < fieldDeadline) {
+            attempts++
+            if (attempts == 1) trace("typeInDialog scanning for editable field")
+            if (setTopmostDialogText(value, clearFirst)) return
+            Thread.sleep(50)
+        }
+        val dialog = findTopmostDialog()
+        log.warn(
+            "Could not find an editable field in the topmost dialog. " +
+                "dialog=${dialog?.javaClass?.name}, tree=${ComponentTreeWalker.describeTree(dialog?.contentPane, 8)}",
+        )
+        if (dialog != null) {
+            throw IllegalStateException("No editable text field found in dialog ${dialog.title}")
+        }
 
         val focusOwner = keyboardFocusManagerFocusOwner()
         var inTemplateMode = false
@@ -899,6 +1058,62 @@ class InProcessGuiExecutor(
         // Dismiss autocomplete if not in template mode
         if (!inTemplateMode) {
             dismissAutocompletePopup()
+        }
+    }
+
+    /** Set text in a standard IntelliJ dialog field without keyboard simulation. */
+    private fun setTopmostDialogText(
+        value: String,
+        clearFirst: Boolean,
+    ): Boolean {
+        val dialog = findTopmostDialog() ?: return false
+        val modalityState =
+            com.intellij.openapi.application.ModalityState.stateForComponent(dialog)
+        return runOnEdtAndWaitWithModality(modalityState) {
+            trace("setTopmostDialogText EDT entered")
+            val root = dialog.contentPane
+            val editorTextField =
+                ComponentTreeWalker.findComponentByType<com.intellij.ui.EditorTextField>(root)
+            if (editorTextField != null) {
+                trace("setTopmostDialogText found ${editorTextField.javaClass.name}")
+                if (clearFirst) editorTextField.selectAll()
+                editorTextField.text = value
+                trace("setTopmostDialogText EditorTextField updated")
+                return@runOnEdtAndWaitWithModality true
+            }
+
+            val comboEditor =
+                ComponentTreeWalker
+                    .findAllComponentsByType<javax.swing.JComboBox<*>>(root)
+                    .asSequence()
+                    .mapNotNull { it.editor?.editorComponent }
+                    .firstOrNull { it is com.intellij.ui.EditorTextField || it is JTextField }
+            if (comboEditor is com.intellij.ui.EditorTextField) {
+                trace("setTopmostDialogText found combo ${comboEditor.javaClass.name}")
+                if (clearFirst) comboEditor.selectAll()
+                comboEditor.text = value
+                trace("setTopmostDialogText combo EditorTextField updated")
+                return@runOnEdtAndWaitWithModality true
+            }
+            if (comboEditor is JTextField) {
+                trace("setTopmostDialogText found combo ${comboEditor.javaClass.name}")
+                if (clearFirst) comboEditor.selectAll()
+                comboEditor.text = value
+                trace("setTopmostDialogText combo JTextField updated")
+                return@runOnEdtAndWaitWithModality true
+            }
+
+            val textField = ComponentTreeWalker.findTextComponent(root, "")
+            if (textField != null) {
+                trace("setTopmostDialogText found ${textField.javaClass.name}")
+                if (clearFirst) textField.selectAll()
+                textField.text = value
+                trace("setTopmostDialogText JTextComponent updated")
+                return@runOnEdtAndWaitWithModality true
+            }
+
+            trace("setTopmostDialogText found no editable component")
+            false
         }
     }
 
@@ -1059,21 +1274,47 @@ class InProcessGuiExecutor(
         val keyCode =
             keyCodeForName(keyName)
                 ?: throw IllegalArgumentException("Unknown key name: $keyName")
-        runOnEdtAndWait {
-            val focusOwner = keyboardFocusManagerFocusOwner() ?: return@runOnEdtAndWait
-            val keyStroke = KeyStroke.getKeyStroke(keyCode, 0)
-            val listeners = focusOwner.keyListeners
-            val event =
-                KeyEvent(
-                    focusOwner,
-                    KeyEvent.KEY_PRESSED,
-                    System.currentTimeMillis(),
-                    0,
-                    keyCode,
-                    keyStroke.keyChar.takeIf { it.code != 0 } ?: KeyEvent.CHAR_UNDEFINED,
-                )
-            listeners.forEach { it.keyPressed(event) }
+        val dialog = findTopmostDialog()
+        if (dialog != null) {
+            runOnEdtAndWaitWithModality(
+                com.intellij.openapi.application.ModalityState.stateForComponent(dialog),
+            ) {
+                pressKeyOnEdt(keyCode, dialog)
+            }
+        } else {
+            runOnEdtAndWait { pressKeyOnEdt(keyCode, null) }
         }
+    }
+
+    private fun pressKeyOnEdt(
+        keyCode: Int,
+        dialog: JDialog?,
+    ) {
+        if (keyCode == KeyEvent.VK_ENTER) {
+            val defaultButton = dialog?.rootPane?.defaultButton
+            if (defaultButton != null && defaultButton.isEnabled) {
+                defaultButton.doClick()
+                return
+            }
+            val renameButton = dialog?.let { ComponentTreeWalker.findButton(it.contentPane, "Rename") }
+            if (renameButton != null && renameButton.isEnabled) {
+                renameButton.doClick()
+                return
+            }
+        }
+        val focusOwner = keyboardFocusManagerFocusOwner() ?: return
+        val keyStroke = KeyStroke.getKeyStroke(keyCode, 0)
+        val listeners = focusOwner.keyListeners
+        val event =
+            KeyEvent(
+                focusOwner,
+                KeyEvent.KEY_PRESSED,
+                System.currentTimeMillis(),
+                0,
+                keyCode,
+                keyStroke.keyChar.takeIf { it.code != 0 } ?: KeyEvent.CHAR_UNDEFINED,
+            )
+        listeners.forEach { it.keyPressed(event) }
     }
 
     /**

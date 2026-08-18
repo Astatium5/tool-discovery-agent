@@ -33,6 +33,36 @@
                     text="Run Test Script"
                     description="Execute the test script in TestScript.kt"
                     icon="AllIcons.Actions.Execute"/>
+
+            <action id="ToolDiscovery.RunRenameTest"
+                    class="execution.RunRenameTestAction"
+                    text="Test Rename Refactoring"
+                    description="Run the in-process Rename refactoring test"
+                    icon="AllIcons.Actions.Execute"/>
+
+            <action id="ToolDiscovery.RunChangeSignatureVisibilityTest"
+                    class="execution.RunChangeSignatureVisibilityTestAction"
+                    text="Test Change Signature · Visibility"
+                    description="Change a private method's visibility with Change Signature"
+                    icon="AllIcons.Actions.Execute"/>
+
+            <action id="ToolDiscovery.RunChangeSignatureNameTest"
+                    class="execution.RunChangeSignatureNameTestAction"
+                    text="Test Change Signature · Name"
+                    description="Change a private method's name with Change Signature"
+                    icon="AllIcons.Actions.Execute"/>
+
+            <action id="ToolDiscovery.RunChangeSignatureReturnTypeTest"
+                    class="execution.RunChangeSignatureReturnTypeTestAction"
+                    text="Test Change Signature · Return Type"
+                    description="Change a private method's return type with Change Signature"
+                    icon="AllIcons.Actions.Execute"/>
+
+            <action id="ToolDiscovery.RunChangeSignatureParametersTest"
+                    class="execution.RunChangeSignatureParametersTestAction"
+                    text="Test Change Signature · Parameters"
+                    description="Change a private method's parameter name with Change Signature"
+                    icon="AllIcons.Actions.Execute"/>
         </group>
     </actions>
 </idea-plugin>

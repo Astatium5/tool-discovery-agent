@@ -45,8 +45,9 @@ class UiAgentTestExtended : BaseTest() {
             )
         profile = ApplicationProfile.loadFromFile("build/reports/app-profile.json")
             ?: ApplicationProfile(appName = "IntelliJ IDEA")
-        val project = com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
-            ?: throw IllegalStateException("No open project found. Run './gradlew runIdeForUiTests' first.")
+        val project =
+            com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
+                ?: throw IllegalStateException("No open project found. Run './gradlew runIdeForUiTests' first.")
         executor = InProcessGuiExecutor(project)
         uiAgent =
             UiAgent(

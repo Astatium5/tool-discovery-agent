@@ -196,9 +196,15 @@ object ComponentTreeWalker {
      */
     fun getRootPane(window: Window?): JRootPane? {
         if (window == null) return null
-        if (window is JDialog) return window.rootPane
-        if (window is javax.swing.JFrame) return window.rootPane
-        return null
+        return try {
+            when (window) {
+                is JDialog -> window.rootPane
+                is javax.swing.JFrame -> window.rootPane
+                else -> null
+            }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /**
@@ -210,9 +216,18 @@ object ComponentTreeWalker {
     ): JButton? {
         if (root == null) return null
         val candidates = findAllComponentsByType<JButton>(root)
-        return candidates.firstOrNull { btn ->
-            btn.text?.contains(label, ignoreCase = true) == true
-        }
+        return candidates.firstOrNull { btn -> buttonMatchesLabel(btn, label) }
+    }
+
+    private fun buttonMatchesLabel(
+        button: AbstractButton,
+        label: String,
+    ): Boolean {
+        if (button.text?.contains(label, ignoreCase = true) == true) return true
+        val actionName = button.action?.getValue(javax.swing.Action.NAME)?.toString()
+        if (actionName?.contains(label, ignoreCase = true) == true) return true
+        val accessible = button.accessibleContext?.accessibleName
+        return accessible?.contains(label, ignoreCase = true) == true
     }
 
     /**
@@ -280,7 +295,12 @@ object ComponentTreeWalker {
     ): JComboBox<*>? {
         if (root == null) return null
         if (root is JComboBox<*>) {
-            if (label.isEmpty()) return root
+            if (
+                label.isEmpty() ||
+                root.accessibleContext?.accessibleName?.contains(label, ignoreCase = true) == true
+            ) {
+                return root
+            }
         }
         if (root is Container) {
             for (child in root.components) {

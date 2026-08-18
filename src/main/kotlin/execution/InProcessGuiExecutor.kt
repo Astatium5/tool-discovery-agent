@@ -1,23 +1,15 @@
 package execution
 
-import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.WindowManager
-import java.awt.Component
 import java.awt.Window
-import java.awt.event.InputEvent
-import java.awt.event.KeyEvent
 import javax.swing.JDialog
 import javax.swing.JFrame
 import javax.swing.JMenu
 import javax.swing.JMenuBar
 import javax.swing.JMenuItem
-import javax.swing.JPopupMenu
-import javax.swing.JRootPane
 import javax.swing.JTextField
-import javax.swing.KeyStroke
-import javax.swing.SwingUtilities
 
 /**
  * Executes IDE actions by manipulating Swing components directly — no HTTP,
@@ -37,47 +29,24 @@ import javax.swing.SwingUtilities
 class InProcessGuiExecutor(
     private val project: Project,
 ) {
-    private val log = logger<InProcessGuiExecutor>()
+    private val edtDispatcher = EdtDispatcher()
+    private val keyboardDispatcher = KeyboardDispatcher(edtDispatcher)
+    private val dialogController = DialogController(edtDispatcher, keyboardDispatcher)
+    private val editorController = EditorController(project, edtDispatcher)
     private var activePopup: com.intellij.openapi.ui.popup.JBPopup? = null
 
     // ── EDT helpers ──────────────────────────────────────────────────────────
 
-    fun isOnEdt(): Boolean = SwingUtilities.isEventDispatchThread()
+    fun isOnEdt(): Boolean = edtDispatcher.isOnEdt()
 
-    fun runOnEdt(block: () -> Unit) {
-        if (isOnEdt()) block() else SwingUtilities.invokeLater(block)
-    }
+    fun runOnEdt(block: () -> Unit) = edtDispatcher.runOnEdt(block)
 
-    fun <T> runOnEdtAndWait(block: () -> T): T {
-        if (isOnEdt()) return block()
-        return runOnEdtAndWaitWithModality(
-            com.intellij.openapi.application.ModalityState.defaultModalityState(),
-            block,
-        )
-    }
+    fun <T> runOnEdtAndWait(block: () -> T): T = edtDispatcher.runOnEdtAndWait(block)
 
     private fun <T> runOnEdtAndWaitWithModality(
         modalityState: com.intellij.openapi.application.ModalityState,
         block: () -> T,
-    ): T {
-        if (isOnEdt()) return block()
-        val holder = arrayOfNulls<Any>(1)
-        val throwable = arrayOfNulls<Throwable>(1)
-        com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait({
-            try {
-                holder[0] = block()
-            } catch (t: Throwable) {
-                throwable[0] = t
-            }
-        }, modalityState)
-        throwable[0]?.let { throw it }
-        @Suppress("UNCHECKED_CAST")
-        return holder[0] as T
-    }
-
-    private fun trace(message: String) {
-        println("    InProcessGuiExecutor: $message")
-    }
+    ): T = edtDispatcher.runOnEdtAndWaitWithModality(modalityState, block)
 
     // ── Window / frame access ────────────────────────────────────────────────
 
@@ -92,14 +61,7 @@ class InProcessGuiExecutor(
             frame?.jMenuBar
         }
 
-    fun findTopmostDialog(): JDialog? {
-        if (isOnEdt()) return ComponentTreeWalker.getTopmostDialog()
-        var dialog: JDialog? = null
-        com.intellij.openapi.application.ApplicationManager.getApplication().invokeAndWait({
-            dialog = ComponentTreeWalker.getTopmostDialog()
-        }, com.intellij.openapi.application.ModalityState.any())
-        return dialog
-    }
+    fun findTopmostDialog(): JDialog? = edtDispatcher.findTopmostDialog()
 
     /**
      * Open the editor's context menu at the current caret position, in-process
@@ -139,10 +101,10 @@ class InProcessGuiExecutor(
         val dataManager = com.intellij.ide.DataManager.getInstance()
         val dataContext = dataManager.getDataContext(editor.contentComponent)
         val popup =
-                    com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+            com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
                 .createActionGroupPopup(
                     null,
-                    group!!,
+                    group,
                     dataContext,
                     com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
                     false,
@@ -230,7 +192,7 @@ class InProcessGuiExecutor(
                 } else {
                     val frame = findMainFrame()
                     com.intellij.ide.DataManager.getInstance().getDataContext(frame?.contentPane)
-            }
+                }
 
             if (core.equals("Rename", ignoreCase = true)) {
                 // RenameDialog.show() is modal and blocks until the dialog
@@ -255,11 +217,22 @@ class InProcessGuiExecutor(
                                 null,
                                 action,
                                 dataContext,
-                    com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
+                                com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
                                 false,
                             )
                     (subPopup as com.intellij.openapi.ui.popup.JBPopup).showInBestPositionFor(dataContext)
                     activePopup = subPopup
+                    return@runOnEdtAndWait
+                }
+                if (isModalRefactoringAction(core)) {
+                    val event =
+                        com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
+                            action,
+                            null,
+                            "editorPopupMenu",
+                            dataContext,
+                        )
+                    scheduleActionInvocation(action, event)
                     return@runOnEdtAndWait
                 }
                 val editorComponent = editor?.contentComponent
@@ -279,17 +252,18 @@ class InProcessGuiExecutor(
                         null
                     }
 
-                val popupList = findPopupListInWindows() ?: run {
-                    val event =
-                        com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
-                            action,
-                            mouseEvent,
-                            "editorPopupMenu",
-                            dataContext,
-                        )
-                    performInProcessAction(action, event, dataContext, editor, core)
-                    return@runOnEdtAndWait
-                }
+                val popupList =
+                    findPopupListInWindows() ?: run {
+                        val event =
+                            com.intellij.openapi.actionSystem.AnActionEvent.createFromAnAction(
+                                action,
+                                mouseEvent,
+                                "editorPopupMenu",
+                                dataContext,
+                            )
+                        performInProcessAction(action, event, dataContext, editor, core)
+                        return@runOnEdtAndWait
+                    }
 
                 val model = popupList.model
                 for (i in 0 until model.size) {
@@ -386,10 +360,35 @@ class InProcessGuiExecutor(
             invokeRenameDialog(editor, dataContext)
             return
         }
-
-        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
-            action.actionPerformed(event)
+        if (isModalRefactoringAction(label)) {
+            scheduleActionInvocation(action, event)
+            return
         }
+
+        action.actionPerformed(event)
+    }
+
+    private fun isModalRefactoringAction(label: String): Boolean =
+        label.equals("Change Signature", ignoreCase = true) ||
+            label.equals("Introduce Variable", ignoreCase = true) ||
+            label.equals("Introduce Constant", ignoreCase = true) ||
+            label.equals("Extract Method", ignoreCase = true) ||
+            label.equals("Extract Function", ignoreCase = true) ||
+            label.equals("Introduce Parameter", ignoreCase = true) ||
+            label.equals("Introduce Field", ignoreCase = true) ||
+            label.equals("Extract Interface", ignoreCase = true) ||
+            label.equals("Extract Superclass", ignoreCase = true)
+
+    private fun scheduleActionInvocation(
+        action: com.intellij.openapi.actionSystem.AnAction,
+        event: com.intellij.openapi.actionSystem.AnActionEvent,
+    ) {
+        activePopup?.cancel()
+        activePopup = null
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(
+            { action.actionPerformed(event) },
+            com.intellij.openapi.application.ModalityState.current(),
+        )
     }
 
     private fun findActionByLabel(
@@ -397,8 +396,9 @@ class InProcessGuiExecutor(
         groupId: String,
         label: String,
     ): com.intellij.openapi.actionSystem.AnAction? {
-        val group = actionManager.getAction(groupId) as? com.intellij.openapi.actionSystem.DefaultActionGroup
-            ?: return null
+        val group =
+            actionManager.getAction(groupId) as? com.intellij.openapi.actionSystem.DefaultActionGroup
+                ?: return null
         return findActionInGroup(group, label)
     }
 
@@ -450,24 +450,26 @@ class InProcessGuiExecutor(
                 list.selectedIndex = i
 
                 // Invoke handleSelect directly on the popup via reflection
-                val handleSelectMethod = popup.javaClass.getMethod(
-                    "handleSelect",
-                    Boolean::class.javaPrimitiveType,
-                    java.awt.event.InputEvent::class.java,
-                )
+                val handleSelectMethod =
+                    popup.javaClass.getMethod(
+                        "handleSelect",
+                        Boolean::class.javaPrimitiveType,
+                        java.awt.event.InputEvent::class.java,
+                    )
                 val cellBounds = list.getCellBounds(i, i) ?: continue
                 val cx = cellBounds.x + cellBounds.width / 2
                 val cy = cellBounds.y + cellBounds.height / 2
-                val inputEvent = java.awt.event.MouseEvent(
-                    list,
-                    java.awt.event.MouseEvent.MOUSE_CLICKED,
-                    System.currentTimeMillis(),
-                    0,
-                    cx,
-                    cy,
-                    1,
-                    false,
-                )
+                val inputEvent =
+                    java.awt.event.MouseEvent(
+                        list,
+                        java.awt.event.MouseEvent.MOUSE_CLICKED,
+                        System.currentTimeMillis(),
+                        0,
+                        cx,
+                        cy,
+                        1,
+                        false,
+                    )
                 handleSelectMethod.invoke(popup, false, inputEvent)
                 return true
             }
@@ -484,7 +486,10 @@ class InProcessGuiExecutor(
         return false
     }
 
-    private fun clickItemInList(list: javax.swing.JList<*>, label: String): Boolean {
+    private fun clickItemInList(
+        list: javax.swing.JList<*>,
+        label: String,
+    ): Boolean {
         val model = list.model
         for (i in 0 until model.size) {
             val value = model.getElementAt(i)
@@ -554,42 +559,19 @@ class InProcessGuiExecutor(
      * Return the currently focused editor's `Editor` instance, or null if no
      * editor is open. EDT-only call wrapped in `invokeAndWait`.
      */
-    fun findEditor(): com.intellij.openapi.editor.Editor? =
-        runOnEdtAndWait {
-            FileEditorManager.getInstance(project).selectedTextEditor
-        }
+    fun findEditor(): com.intellij.openapi.editor.Editor? = editorController.findEditor()
 
     /** Focus the active editor by selecting it in the file editor manager. */
-    fun focusEditor() {
-        runOnEdtAndWait {
-            val editor =
-                FileEditorManager.getInstance(project).selectedTextEditor
-                    ?: throw IllegalStateException("No editor is currently open")
-            editor.contentComponent.requestFocusInWindow()
-        }
-    }
+    fun focusEditor() = editorController.focusEditor()
 
     /** Replace the contents of the active editor's document. */
-    fun typeInEditor(text: String) {
-        val editor = findEditor() ?: throw IllegalStateException("No editor is currently open")
-        runOnEdtAndWait {
-            editor.document.setText(text)
-        }
-    }
+    fun typeInEditor(text: String) = editorController.typeInEditor(text)
 
     /**
      * Move the caret to [offset] in the active editor. The offset is
      * 0-based into the document text.
      */
-    fun moveCaretInEditor(offset: Int) {
-        val editor = findEditor() ?: throw IllegalStateException("No editor is currently open")
-        runOnEdtAndWait {
-            editor.caretModel.moveToOffset(offset)
-            editor.scrollingModel.scrollToCaret(
-                com.intellij.openapi.editor.ScrollType.CENTER,
-            )
-        }
-    }
+    fun moveCaretInEditor(offset: Int) = editorController.moveCaretInEditor(offset)
 
     /**
      * Select text in the active editor between [startOffset] and [endOffset]
@@ -598,12 +580,7 @@ class InProcessGuiExecutor(
     fun selectTextInEditor(
         startOffset: Int,
         endOffset: Int,
-    ) {
-        val editor = findEditor() ?: throw IllegalStateException("No editor is currently open")
-        runOnEdtAndWait {
-            editor.selectionModel.setSelection(startOffset, endOffset)
-        }
-    }
+    ) = editorController.selectTextInEditor(startOffset, endOffset)
 
     /**
      * Select the line range from [fromLine] to [toLine] (both 1-based,
@@ -612,29 +589,13 @@ class InProcessGuiExecutor(
     fun selectLineRange(
         fromLine: Int,
         toLine: Int,
-    ) {
-        val editor = findEditor() ?: throw IllegalStateException("No editor is currently open")
-        runOnEdtAndWait {
-            val doc = editor.document
-            val startOffset = doc.getLineStartOffset((fromLine - 1).coerceAtLeast(0))
-            val endLineIdx = (toLine - 1).coerceAtMost(doc.lineCount - 1)
-            val endOffset = doc.getLineEndOffset(endLineIdx)
-            editor.selectionModel.setSelection(startOffset, endOffset)
-            editor.caretModel.moveToOffset(endOffset)
-            editor.scrollingModel.scrollToCaret(
-                com.intellij.openapi.editor.ScrollType.CENTER,
-            )
-        }
-    }
+    ) = editorController.selectLineRange(fromLine, toLine)
 
     /**
      * Read the document text of the active editor. Document reads are
      * thread-safe in IntelliJ, so this does not need EDT dispatch.
      */
-    fun getDocumentText(): String? =
-        runOnEdtAndWait {
-            findEditor()?.document?.text
-        }
+    fun getDocumentText(): String? = editorController.getDocumentText()
 
     /**
      * Move the caret to the middle of the first textual occurrence of [symbol]
@@ -642,51 +603,10 @@ class InProcessGuiExecutor(
      * and a flag indicating whether the caret was already inside one of the
      * matches before the call.
      */
-    fun moveCaretToSymbol(symbol: String): MoveCaretOutcome {
-        require(symbol.isNotEmpty()) {
-            "symbol must be a non-empty identifier visible in the editor"
-        }
-        val editor = findEditor() ?: throw IllegalStateException("No editor is currently open")
-        return runOnEdtAndWait {
-            val doc = editor.document
-            val text = doc.text
-            val idx = text.indexOf(symbol)
-            if (idx < 0) {
-                throw IllegalStateException("Symbol '$symbol' not found in editor")
-            }
-            val currentOffset = editor.caretModel.offset
-            val total = countOccurrences(text, symbol)
-            val alreadyOn = currentOffset in idx until (idx + symbol.length)
-            if (!alreadyOn) {
-                val target = idx + symbol.length / 2
-                editor.caretModel.moveToOffset(target)
-                editor.scrollingModel.scrollToCaret(
-                    com.intellij.openapi.editor.ScrollType.CENTER,
-                )
-            }
-            val pos = editor.offsetToLogicalPosition(editor.caretModel.offset)
-            MoveCaretOutcome(
-                line = pos.line + 1,
-                column = pos.column + 1,
-                totalOccurrences = total,
-                alreadyOnSymbol = alreadyOn,
-            )
-        }
-    }
+    fun moveCaretToSymbol(symbol: String): MoveCaretOutcome = editorController.moveCaretToSymbol(symbol)
 
-    private fun countOccurrences(
-        text: String,
-        symbol: String,
-    ): Int {
-        if (symbol.isEmpty()) return 0
-        var count = 0
-        var pos = 0
-        while (true) {
-            val found = text.indexOf(symbol, pos)
-            if (found < 0) return count
-            count++
-            pos = found + symbol.length
-        }
+    fun waitUntilIndexed() {
+        com.intellij.openapi.project.DumbService.getInstance(project).waitForSmartMode()
     }
 
     data class MoveCaretOutcome(
@@ -714,95 +634,21 @@ class InProcessGuiExecutor(
      * caret, and a small window of visible code around the caret). Returns
      * null if no editor is open.
      */
-    fun getEditorContext(around: Int = 25): EditorCodeContext? =
-        runOnEdtAndWait {
-            val editor = findEditor() ?: return@runOnEdtAndWait null
-            val doc = editor.document
-            val vf =
-                com.intellij.openapi.fileEditor.FileDocumentManager
-                    .getInstance()
-                    .getFile(doc)
-            val caret = editor.caretModel.primaryCaret
-            val pos = caret.logicalPosition
-            val total = doc.lineCount
-            val center = pos.line
-            val start = (center - around).coerceAtLeast(0)
-            val end = (center + around).coerceAtMost(total - 1)
-            val sb = StringBuilder()
-            for (i in start..end) {
-                val startOff = doc.getLineStartOffset(i)
-                val endOff = doc.getLineEndOffset(i)
-                sb.append(doc.getText(com.intellij.openapi.util.TextRange(startOff, endOff)))
-                sb.append('\n')
-            }
-            EditorCodeContext(
-                filePath = vf?.path.orEmpty(),
-                fileName = vf?.name.orEmpty(),
-                caretLine = pos.line + 1,
-                caretColumn = pos.column + 1,
-                totalLines = total,
-                symbolUnderCaret = identifierAtCaret(doc.text, caret.offset),
-                selectedText = caret.selectedText.orEmpty(),
-                windowStartLine = start + 1,
-                windowEndLine = end + 1,
-                visibleText = sb.toString(),
-            )
-        }
-
-    private fun identifierAtCaret(
-        text: String,
-        offset: Int,
-    ): String {
-        if (offset < 0 || offset > text.length) return ""
-        var start = offset
-        var end = offset
-
-        fun isIdent(c: Char) = c.isLetterOrDigit() || c == '_'
-        while (start > 0 && isIdent(text[start - 1])) start--
-        while (end < text.length && isIdent(text[end])) end++
-        return text.substring(start, end)
-    }
+    fun getEditorContext(around: Int = 25): EditorCodeContext? = editorController.getEditorContext(around)
 
     // ── Dialog interactions ──────────────────────────────────────────────────
 
-    /** Click a button in the topmost dialog matching [label] (case-insensitive). */
-    fun clickDialogButton(label: String) {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val button =
-                ComponentTreeWalker.findButton(dialog.contentPane, label)
-                    ?: throw IllegalStateException("Button '$label' not found in dialog")
-            button.doClick()
-        }
-    }
+    fun clickDialogButton(label: String) = dialogController.clickDialogButton(label)
 
-    /** Click the dialog's default button (typically OK). */
-    fun clickDefaultButton() {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val rootPane: JRootPane =
-                dialog.rootPane
-                    ?: throw IllegalStateException("Dialog has no root pane")
-            val defaultButton =
-                rootPane.defaultButton
-                    ?: throw IllegalStateException("Dialog has no default button")
-            defaultButton.doClick()
-        }
-    }
+    fun clickDefaultButton() = dialogController.clickDefaultButton()
+
+    fun clickRefactorButton() = dialogController.clickRefactorButton()
 
     /** Type [value] into the [field], replacing any existing text. */
     fun typeInTextField(
         field: JTextField,
         value: String,
-    ) {
-        runOnEdtAndWait {
-            field.text = value
-        }
-    }
+    ) = dialogController.typeInTextField(field, value)
 
     /**
      * Type [value] into the first matching text field found in the topmost
@@ -811,101 +657,31 @@ class InProcessGuiExecutor(
     fun typeInTextFieldByLabel(
         label: String,
         value: String,
-    ) {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val field =
-                ComponentTreeWalker.findTextField(dialog.contentPane, label)
-                    ?: throw IllegalStateException("Text field for label '$label' not found in dialog")
-            field.text = value
-        }
-    }
+    ) = dialogController.typeInTextFieldByLabel(label, value)
 
-    /** Set the [label] checkbox's selected state to [checked]. */
+    fun typeInLabeledField(
+        label: String,
+        value: String,
+    ) = dialogController.typeInLabeledField(label, value)
+
+    fun setParameterName(
+        row: Int,
+        name: String,
+    ) = dialogController.setParameterName(row, name)
+
     fun setCheckboxState(
         label: String,
         checked: Boolean,
-    ) {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val cb =
-                ComponentTreeWalker.findCheckBox(dialog.contentPane, label)
-                    ?: throw IllegalStateException("Checkbox '$label' not found in dialog")
-            cb.isSelected = checked
-        }
-    }
+    ) = dialogController.setCheckboxState(label, checked)
 
-    /**
-     * Close the topmost dialog. Tries `DialogWrapper.doCancelAction()` first
-     * (the IntelliJ-native close path), then falls back to closing the window.
-     */
-    fun closeTopmostDialog() {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: return@runOnEdtAndWait
-            closeDialog(dialog)
-        }
-    }
+    fun closeTopmostDialog() = dialogController.closeTopmostDialog()
 
-    /**
-     * Iteratively close all visible dialogs, up to [maxAttempts] times. Some
-     * dialogs trigger nested dialogs; looping handles those chains.
-     */
-    fun closeAllDialogs(maxAttempts: Int = 5) {
-        repeat(maxAttempts) {
-            val dialog = findTopmostDialog() ?: return
-            closeDialog(dialog)
-            // Pump the EDT to let the close complete before checking again
-            runOnEdtAndWait { /* no-op, just wait */ }
-        }
-    }
+    fun closeAllDialogs(maxAttempts: Int = 5) = dialogController.closeAllDialogs(maxAttempts)
 
-    /**
-     * Open the dropdown matching [label] in the topmost dialog and select
-     * [value]. Falls back to typing the value into the focused field if the
-     * dropdown option list is not visible.
-     */
     fun selectDropdownValue(
         label: String,
         value: String,
-    ) {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val combo =
-                ComponentTreeWalker.findComboBox(dialog.contentPane, label)
-                    ?: throw IllegalStateException("Dropdown '$label' not found in dialog")
-            combo.isPopupVisible = true
-            val itemIndex =
-                (0 until combo.itemCount).firstOrNull { i ->
-                    combo.getItemAt(i)?.toString()?.contains(value, ignoreCase = true) == true
-                }
-            if (itemIndex != null) {
-                combo.selectedIndex = itemIndex
-            }
-        }
-    }
-
-    private fun closeDialog(dialog: JDialog) {
-        // Try DialogWrapper reflection first
-        try {
-            val doCancel = dialog.javaClass.methods.firstOrNull { it.name == "doCancelAction" }
-            if (doCancel != null) {
-                doCancel.invoke(dialog)
-                return
-            }
-        } catch (t: Throwable) {
-            log.debug("DialogWrapper.doCancelAction not available", t)
-        }
-        // Fall back to disposing the window
-        dialog.dispose()
-    }
+    ) = dialogController.selectDropdownValue(label, value)
 
     // ── File opening ─────────────────────────────────────────────────────────
 
@@ -913,462 +689,35 @@ class InProcessGuiExecutor(
      * Open a file via IntelliJ's Search Everywhere (Cmd+Shift+O / Ctrl+Shift+O).
      * Triggers the `GotoFile` action, types the filename, then confirms with Enter.
      */
-    fun openFile(path: String) {
-        runOnEdtAndWait {
-            val project =
-                com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
-                    ?: throw IllegalStateException("No open project")
-            val fileName = path.substringAfterLast('/')
-            val scope = com.intellij.psi.search.GlobalSearchScope.projectScope(project)
-            val files =
-                com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(
-                    fileName,
-                    scope,
-                )
-            val file =
-                files.firstOrNull {
-                    it.path.endsWith(path) || it.name.equals(fileName, ignoreCase = true)
-                }
-                    ?: throw IllegalStateException("File '$path' not found in project")
-            com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
-                .openFile(file, true)
-        }
-    }
+    fun openFile(path: String) = editorController.openFile(path)
 
-    /**
-     * Type text into whatever field currently has focus. Used for Search Everywhere
-     * and similar modal dialogs where we just need to dump text into the focused input.
-     */
-    private fun typeInFocusedField(text: String) {
-        runOnEdtAndWait {
-            val focusOwner = keyboardFocusManagerFocusOwner() ?: return@runOnEdtAndWait
-            if (focusOwner is JTextField) {
-                focusOwner.text = text
-                return@runOnEdtAndWait
-            }
-            val robot = java.awt.Robot()
-            for (c in text) {
-                val keyCode = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(c.code)
-                if (keyCode != java.awt.event.KeyEvent.VK_UNDEFINED) {
-                    val needsShift = c.isUpperCase() || "!@#$%^&*()_+{}|:\"<>?~".contains(c)
-                    val modifiers = if (needsShift) java.awt.event.InputEvent.SHIFT_DOWN_MASK else 0
-                    robot.keyPress(modifiers or keyCode)
-                    robot.keyRelease(modifiers or keyCode)
-                } else {
-                    val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
-                    val transferable = java.awt.datatransfer.StringSelection(c.toString())
-                    clipboard.setContents(transferable, null)
-                    val modifier =
-                        if (System.getProperty("os.name").lowercase().let { it.contains("mac") }) {
-                            java.awt.event.KeyEvent.VK_META
-                        } else {
-                            java.awt.event.KeyEvent.VK_CONTROL
-                        }
-                    robot.keyPress(modifier)
-                    robot.keyPress(java.awt.event.KeyEvent.VK_V)
-                    robot.keyRelease(java.awt.event.KeyEvent.VK_V)
-                    robot.keyRelease(modifier)
-                }
-            }
-        }
-    }
-
-    private fun waitForDialog(timeoutMs: Long = 2000) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (findTopmostDialog() != null) return
-            Thread.sleep(50)
-        }
-    }
-
-    // ── Dialog text input ────────────────────────────────────────────────────
-
-    /**
-     * Type [value] into the currently focused text field in a dialog or inline
-     * template. Handles:
-     * - Inline template detection (focus is on EditorComponentImpl → skip clear)
-     * - Autocomplete dismissal (only for non-template fields)
-     */
     fun typeInDialog(
         value: String,
         clearFirst: Boolean = true,
-    ) {
-        trace("typeInDialog start valueLength=${value.length} thread=${Thread.currentThread().name}")
-        waitForDialog(timeoutMs = 1000)
-        trace("typeInDialog waitForDialog returned")
-
-        val fieldDeadline = System.currentTimeMillis() + 2000
-        var attempts = 0
-        while (System.currentTimeMillis() < fieldDeadline) {
-            attempts++
-            if (attempts == 1) trace("typeInDialog scanning for editable field")
-            if (setTopmostDialogText(value, clearFirst)) return
-            Thread.sleep(50)
-        }
-        val dialog = findTopmostDialog()
-        log.warn(
-            "Could not find an editable field in the topmost dialog. " +
-                "dialog=${dialog?.javaClass?.name}, tree=${ComponentTreeWalker.describeTree(dialog?.contentPane, 8)}",
-        )
-        if (dialog != null) {
-            throw IllegalStateException("No editable text field found in dialog ${dialog.title}")
-        }
-
-        val focusOwner = keyboardFocusManagerFocusOwner()
-        var inTemplateMode = false
-
-        if (focusOwner != null) {
-            val isEditorComponent = focusOwner.javaClass.simpleName.contains("Editor", ignoreCase = true)
-
-            if (clearFirst && !isEditorComponent && focusOwner is JTextField) {
-                focusOwner.text = ""
-            } else if (isEditorComponent) {
-                inTemplateMode = true
-            }
-            val robot = java.awt.Robot()
-            for (c in value) {
-                val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
-                val transferable = java.awt.datatransfer.StringSelection(c.toString())
-                clipboard.setContents(transferable, null)
-                val modifier =
-                    if (System.getProperty("os.name").lowercase().let { it.contains("mac") }) {
-                        java.awt.event.KeyEvent.VK_META
-                    } else {
-                        java.awt.event.KeyEvent.VK_CONTROL
-                    }
-                robot.keyPress(modifier)
-                robot.keyPress(java.awt.event.KeyEvent.VK_V)
-                robot.keyRelease(java.awt.event.KeyEvent.VK_V)
-                robot.keyRelease(modifier)
-            }
-        } else {
-            val dialog = findTopmostDialog()
-            if (dialog != null) {
-                val field = ComponentTreeWalker.findTextField(dialog.contentPane, "")
-                if (field != null) {
-                    if (clearFirst) {
-                        field.text = ""
-                    }
-                    field.text = value
-                    return
-                }
-            }
-        }
-
-        // Dismiss autocomplete if not in template mode
-        if (!inTemplateMode) {
-            dismissAutocompletePopup()
-        }
-    }
-
-    /** Set text in a standard IntelliJ dialog field without keyboard simulation. */
-    private fun setTopmostDialogText(
-        value: String,
-        clearFirst: Boolean,
-    ): Boolean {
-        val dialog = findTopmostDialog() ?: return false
-        val modalityState =
-            com.intellij.openapi.application.ModalityState.stateForComponent(dialog)
-        return runOnEdtAndWaitWithModality(modalityState) {
-            trace("setTopmostDialogText EDT entered")
-            val root = dialog.contentPane
-            val editorTextField =
-                ComponentTreeWalker.findComponentByType<com.intellij.ui.EditorTextField>(root)
-            if (editorTextField != null) {
-                trace("setTopmostDialogText found ${editorTextField.javaClass.name}")
-                if (clearFirst) editorTextField.selectAll()
-                editorTextField.text = value
-                trace("setTopmostDialogText EditorTextField updated")
-                return@runOnEdtAndWaitWithModality true
-            }
-
-            val comboEditor =
-                ComponentTreeWalker
-                    .findAllComponentsByType<javax.swing.JComboBox<*>>(root)
-                    .asSequence()
-                    .mapNotNull { it.editor?.editorComponent }
-                    .firstOrNull { it is com.intellij.ui.EditorTextField || it is JTextField }
-            if (comboEditor is com.intellij.ui.EditorTextField) {
-                trace("setTopmostDialogText found combo ${comboEditor.javaClass.name}")
-                if (clearFirst) comboEditor.selectAll()
-                comboEditor.text = value
-                trace("setTopmostDialogText combo EditorTextField updated")
-                return@runOnEdtAndWaitWithModality true
-            }
-            if (comboEditor is JTextField) {
-                trace("setTopmostDialogText found combo ${comboEditor.javaClass.name}")
-                if (clearFirst) comboEditor.selectAll()
-                comboEditor.text = value
-                trace("setTopmostDialogText combo JTextField updated")
-                return@runOnEdtAndWaitWithModality true
-            }
-
-            val textField = ComponentTreeWalker.findTextComponent(root, "")
-            if (textField != null) {
-                trace("setTopmostDialogText found ${textField.javaClass.name}")
-                if (clearFirst) textField.selectAll()
-                textField.text = value
-                trace("setTopmostDialogText JTextComponent updated")
-                return@runOnEdtAndWaitWithModality true
-            }
-
-            trace("setTopmostDialogText found no editable component")
-            false
-        }
-    }
-
-    private fun dismissAutocompletePopup() {
-        try {
-            val anyLookup =
-                Window.getWindows().any { window ->
-                    if (!window.isVisible) return@any false
-                    ComponentTreeWalker.findAllComponentsByType<java.awt.Component>(window).any { comp ->
-                        comp.javaClass.simpleName.contains("Lookup", ignoreCase = true)
-                    }
-                }
-            if (anyLookup) {
-                pressKey("Escape")
-                Thread.sleep(200)
-            }
-        } catch (_: Exception) {
-            // Best-effort
-        }
-    }
-
-    // ── Dropdown / checkbox shortcuts ────────────────────────────────────────
-
-    /**
-     * Select a dropdown value by first focusing the field with the given [label],
-     * then selecting [value] from the dropdown.
-     */
-    fun selectDropdownField(
-        label: String,
-        value: String,
-    ) {
-        focusFieldByLabel(label)
-        Thread.sleep(200)
-        selectDropdownValue(label, value)
-    }
-
-    /**
-     * Set checkbox state by label. Wrapper around [setCheckboxState] for
-     * compatibility with UiExecutor's method name.
-     */
-    fun setCheckbox(
-        label: String,
-        checked: Boolean,
-    ) {
-        setCheckboxState(label, checked)
-    }
+    ) = dialogController.typeInDialog(value, clearFirst)
 
     // ── Shortcut dispatch ────────────────────────────────────────────────────
 
-    /**
-     * Parse a shortcut string like "Shift+F6" or "Ctrl+Alt+Shift+K" and dispatch
-     * it as a key event with the appropriate modifier mask.
-     */
-    fun pressShortcut(keys: String) {
-        val parts = keys.split("+").map { it.trim() }
-        val modifiers = parts.dropLast(1).map { modifierNameToKeyCode(it) }.filter { it != 0 }
-        val mainKey = keyNameToKeyCode(parts.last())
+    fun pressShortcut(keys: String) = keyboardDispatcher.pressShortcut(keys)
 
-        val modifierMask = modifiers.fold(0) { acc, code -> acc or code }
+    fun pressKey(keyName: String) = keyboardDispatcher.pressKey(keyName)
 
-        runOnEdtAndWait {
-            val focusOwner = keyboardFocusManagerFocusOwner() ?: return@runOnEdtAndWait
-            val event =
-                KeyEvent(
-                    focusOwner,
-                    KeyEvent.KEY_PRESSED,
-                    System.currentTimeMillis(),
-                    modifierMask,
-                    mainKey,
-                    KeyEvent.CHAR_UNDEFINED,
-                )
-            focusOwner.keyListeners.forEach { it.keyPressed(event) }
-        }
-    }
-
-    private fun modifierNameToKeyCode(name: String): Int =
-        when (name.lowercase()) {
-            "shift" -> InputEvent.SHIFT_DOWN_MASK
-            "ctrl", "control" -> InputEvent.CTRL_DOWN_MASK
-            "alt", "option" -> InputEvent.ALT_DOWN_MASK
-            "meta", "cmd", "command" -> InputEvent.META_DOWN_MASK
-            else -> 0
-        }
-
-    private fun keyNameToKeyCode(name: String): Int =
-        when (name.lowercase()) {
-            "enter" -> KeyEvent.VK_ENTER
-            "escape", "esc" -> KeyEvent.VK_ESCAPE
-            "tab" -> KeyEvent.VK_TAB
-            "space" -> KeyEvent.VK_SPACE
-            "backspace" -> KeyEvent.VK_BACK_SPACE
-            "delete" -> KeyEvent.VK_DELETE
-            "up" -> KeyEvent.VK_UP
-            "down" -> KeyEvent.VK_DOWN
-            "left" -> KeyEvent.VK_LEFT
-            "right" -> KeyEvent.VK_RIGHT
-            "f1" -> KeyEvent.VK_F1
-            "f2" -> KeyEvent.VK_F2
-            "f3" -> KeyEvent.VK_F3
-            "f4" -> KeyEvent.VK_F4
-            "f5" -> KeyEvent.VK_F5
-            "f6" -> KeyEvent.VK_F6
-            "f7" -> KeyEvent.VK_F7
-            "f8" -> KeyEvent.VK_F8
-            "f9" -> KeyEvent.VK_F9
-            "f10" -> KeyEvent.VK_F10
-            "f11" -> KeyEvent.VK_F11
-            "f12" -> KeyEvent.VK_F12
-            "home" -> KeyEvent.VK_HOME
-            "end" -> KeyEvent.VK_END
-            "pageup" -> KeyEvent.VK_PAGE_UP
-            "pagedown" -> KeyEvent.VK_PAGE_DOWN
-            else -> {
-                if (name.length == 1) {
-                    KeyEvent.getExtendedKeyCodeForChar(name[0].code)
-                } else {
-                    KeyEvent.VK_ENTER
-                }
-            }
-        }
-
-    // ── Field focus & navigation ─────────────────────────────────────────────
-
-    /**
-     * Focus the field associated with the given [label] in the topmost dialog.
-     */
-    fun focusFieldByLabel(label: String) {
-        runOnEdtAndWait {
-            val dialog =
-                ComponentTreeWalker.getTopmostDialog()
-                    ?: throw IllegalStateException("No topmost dialog found")
-            val field =
-                ComponentTreeWalker.findTextField(dialog.contentPane, label)
-                    ?: throw IllegalStateException("Field for label '$label' not found")
-            field.requestFocusInWindow()
-        }
-    }
-
-    /**
-     * Move focus to the next focusable component in the current focus
-     * traversal cycle. Mirrors pressing Tab.
-     */
-    fun focusNextField() {
-        runOnEdtAndWait {
-            val focusOwner = keyboardFocusManagerFocusOwner()
-            if (focusOwner == null) return@runOnEdtAndWait
-            val container = focusOwner.parent ?: return@runOnEdtAndWait
-            val policy = container.focusTraversalPolicy
-            if (policy != null) {
-                val next = policy.getComponentAfter(container, focusOwner)
-                next?.requestFocusInWindow()
-            }
-        }
-    }
-
-    /** Press a single named key, e.g. "Enter", "Escape", "Tab". */
-    fun pressKey(keyName: String) {
-        val keyCode =
-            keyCodeForName(keyName)
-                ?: throw IllegalArgumentException("Unknown key name: $keyName")
-        val dialog = findTopmostDialog()
-        if (dialog != null) {
-            runOnEdtAndWaitWithModality(
-                com.intellij.openapi.application.ModalityState.stateForComponent(dialog),
-            ) {
-                pressKeyOnEdt(keyCode, dialog)
-            }
-        } else {
-            runOnEdtAndWait { pressKeyOnEdt(keyCode, null) }
-        }
-    }
-
-    private fun pressKeyOnEdt(
-        keyCode: Int,
-        dialog: JDialog?,
-    ) {
-        if (keyCode == KeyEvent.VK_ENTER) {
-            val defaultButton = dialog?.rootPane?.defaultButton
-            if (defaultButton != null && defaultButton.isEnabled) {
-                defaultButton.doClick()
-                return
-            }
-            val renameButton = dialog?.let { ComponentTreeWalker.findButton(it.contentPane, "Rename") }
-            if (renameButton != null && renameButton.isEnabled) {
-                renameButton.doClick()
-                return
-            }
-        }
-        val focusOwner = keyboardFocusManagerFocusOwner() ?: return
-        val keyStroke = KeyStroke.getKeyStroke(keyCode, 0)
-        val listeners = focusOwner.keyListeners
-        val event =
-            KeyEvent(
-                focusOwner,
-                KeyEvent.KEY_PRESSED,
-                System.currentTimeMillis(),
-                0,
-                keyCode,
-                keyStroke.keyChar.takeIf { it.code != 0 } ?: KeyEvent.CHAR_UNDEFINED,
-            )
-        listeners.forEach { it.keyPressed(event) }
-    }
-
-    /**
-     * Dispatch a key stroke to the currently focused component, with optional
-     * modifier mask (e.g. `InputEvent.CTRL_DOWN_MASK`).
-     */
     fun pressKeyStroke(
         keyCode: Int,
         modifiers: Int = 0,
-    ) {
-        runOnEdtAndWait {
-            val focusOwner = keyboardFocusManagerFocusOwner() ?: return@runOnEdtAndWait
-            val keyStroke = KeyStroke.getKeyStroke(keyCode, modifiers)
-            val listeners = focusOwner.keyListeners
-            val event =
-                KeyEvent(
-                    focusOwner,
-                    KeyEvent.KEY_PRESSED,
-                    System.currentTimeMillis(),
-                    modifiers,
-                    keyCode,
-                    KeyEvent.CHAR_UNDEFINED,
-                )
-            listeners.forEach { it.keyPressed(event) }
-        }
-    }
+    ) = keyboardDispatcher.pressKeyStroke(keyCode, modifiers)
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    fun selectDropdownField(
+        label: String,
+        value: String,
+    ) = dialogController.selectDropdownField(label, value)
 
-    private fun keyCodeForName(name: String): Int? =
-        when (name.lowercase()) {
-            "enter" -> KeyEvent.VK_ENTER
-            "escape", "esc" -> KeyEvent.VK_ESCAPE
-            "tab" -> KeyEvent.VK_TAB
-            "space" -> KeyEvent.VK_SPACE
-            "backspace" -> KeyEvent.VK_BACK_SPACE
-            "delete" -> KeyEvent.VK_DELETE
-            "home" -> KeyEvent.VK_HOME
-            "end" -> KeyEvent.VK_END
-            "pageup" -> KeyEvent.VK_PAGE_UP
-            "pagedown" -> KeyEvent.VK_PAGE_DOWN
-            "up" -> KeyEvent.VK_UP
-            "down" -> KeyEvent.VK_DOWN
-            "left" -> KeyEvent.VK_LEFT
-            "right" -> KeyEvent.VK_RIGHT
-            "f1" -> KeyEvent.VK_F1
-            "f2" -> KeyEvent.VK_F2
-            "f3" -> KeyEvent.VK_F3
-            "f4" -> KeyEvent.VK_F4
-            "f5" -> KeyEvent.VK_F5
-            "f12" -> KeyEvent.VK_F12
-            else -> null
-        }
+    fun setCheckbox(
+        label: String,
+        checked: Boolean,
+    ) = dialogController.setCheckbox(label, checked)
+
+    fun focusFieldByLabel(label: String) = dialogController.focusFieldByLabel(label)
+
+    fun focusNextField() = dialogController.focusNextField()
 }
-
-// Pull focus-owner lookup into a top-level helper so it is easy to mock in tests.
-private fun keyboardFocusManagerFocusOwner(): Component? = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner

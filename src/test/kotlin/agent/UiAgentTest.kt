@@ -41,8 +41,9 @@ class UiAgentTest : BaseTest() {
 
         // In-process executor requires a Project from IntelliJ's ApplicationManager.
         // When running as a plugin test inside the IDE, this is available.
-        val project = com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
-            ?: throw IllegalStateException("No open project found. Run './gradlew runIdeForUiTests' first.")
+        val project =
+            com.intellij.openapi.project.ProjectManager.getInstance().openProjects.firstOrNull()
+                ?: throw IllegalStateException("No open project found. Run './gradlew runIdeForUiTests' first.")
         executor = InProcessGuiExecutor(project)
 
         uiAgent =

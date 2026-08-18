@@ -621,8 +621,9 @@ Use the available primitive actions and observe the UI after each action."""
      */
     private fun parseDecision(response: String): Decision {
         return try {
-            val jsonText = extractJsonFromResponse(response)
-                .replace(Regex("""\\(?=")"""), "")
+            val jsonText =
+                extractJsonFromResponse(response)
+                    .replace(Regex("""\\(?=")"""), "")
 
             // Parse as a generic JsonElement first so we can patch shorthand
             // forms (e.g. string action) before binding to ActionDto.
